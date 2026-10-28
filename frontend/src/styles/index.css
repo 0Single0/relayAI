@@ -1,0 +1,518 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+
+@custom-variant dark (&:is(.dark *));
+
+/*
+ * 视觉基准：FastGPT（E:\FastGPT-main，packages/web/styles/theme.ts）
+ * 只取配色 / 字体 / 圆角 / 阴影 / 控件高度，不复制其布局与业务组件。
+ * 参考项与批准范围见 docs/visual-reference.md。
+ */
+@theme inline {
+    --font-heading: var(--font-sans);
+    --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+        "Helvetica Neue", Arial, "PingFang SC", "Hiragino Sans GB",
+        "Microsoft YaHei", "微软雅黑", sans-serif;
+
+    --color-success: var(--success);
+    --color-success-foreground: var(--success-foreground);
+    --color-warning: var(--warning);
+    --color-warning-foreground: var(--warning-foreground);
+    --color-border-strong: var(--border-strong);
+
+    /* 登录页弥散渐变配色（用户提供的参考，见 docs/visual-reference.md） */
+    --color-auth-blue: var(--auth-blue);
+    --color-auth-mint: var(--auth-mint);
+    --color-auth-teal: var(--auth-teal);
+
+    --color-sidebar-ring: var(--sidebar-ring);
+    --color-sidebar-border: var(--sidebar-border);
+    --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+    --color-sidebar-accent: var(--sidebar-accent);
+    --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+    --color-sidebar-primary: var(--sidebar-primary);
+    --color-sidebar-foreground: var(--sidebar-foreground);
+    --color-sidebar: var(--sidebar);
+    --color-chart-5: var(--chart-5);
+    --color-chart-4: var(--chart-4);
+    --color-chart-3: var(--chart-3);
+    --color-chart-2: var(--chart-2);
+    --color-chart-1: var(--chart-1);
+    --color-ring: var(--ring);
+    --color-input: var(--input);
+    --color-border: var(--border);
+    --color-destructive: var(--destructive);
+    --color-accent-foreground: var(--accent-foreground);
+    --color-accent: var(--accent);
+    --color-muted-foreground: var(--muted-foreground);
+    --color-muted: var(--muted);
+    --color-secondary-foreground: var(--secondary-foreground);
+    --color-secondary: var(--secondary);
+    --color-primary-foreground: var(--primary-foreground);
+    --color-primary: var(--primary);
+    --color-popover-foreground: var(--popover-foreground);
+    --color-popover: var(--popover);
+    --color-card-foreground: var(--card-foreground);
+    --color-card: var(--card);
+    --color-foreground: var(--foreground);
+    --color-background: var(--background);
+
+    --radius-sm: calc(var(--radius) * 0.75);
+    --radius-md: calc(var(--radius) * 0.9);
+    --radius-lg: var(--radius);
+    --radius-xl: calc(var(--radius) * 1.5);
+    --radius-2xl: calc(var(--radius) * 2);
+    --radius-3xl: calc(var(--radius) * 2.5);
+    --radius-4xl: calc(var(--radius) * 3);
+
+    --shadow-1: 0 1px 2px 0 rgb(19 51 107 / 0.05), 0 0 1px 0 rgb(19 51 107 / 0.08);
+    --shadow-2: 0 4px 4px 0 rgb(19 51 107 / 0.05), 0 0 1px 0 rgb(19 51 107 / 0.08);
+    --shadow-3: 0 4px 10px 0 rgb(19 51 107 / 0.08), 0 0 1px 0 rgb(19 51 107 / 0.08);
+    --shadow-4: 0 12px 16px -4px rgb(19 51 107 / 0.2), 0 0 1px 0 rgb(19 51 107 / 0.2);
+
+    /*
+     * 卡片阴影（surface 专用，刻意做到"几乎看不见"）。
+     *
+     * 仪表盘一屏有十几张卡，任何"看得出来"的阴影都会累积成积木感。
+     * 这里只保留 1px 的接触阴影（0.03 透明度）：卡片靠描边和留白划分层次，
+     * 阴影只负责让边缘不显得像贴纸一样平。
+     */
+    --shadow-surface: 0 1px 2px 0 rgb(19 51 107 / 0.03);
+    --shadow-surface-hover: 0 1px 3px 0 rgb(19 51 107 / 0.05);
+
+    /*
+     * 模型广场卡片阴影：比 surface 明显一档，但仍属"浅色"。
+     *
+     * 广场一屏十几张同尺寸卡片，阴影一旦有明显偏移和浓度，整片区域
+     * 就会像一层层叠起来的积木。这里只用两层：1px 接触阴影收边，
+     * 8px 扩散给一点"离开桌面"的体积，浓度都压在 6% 以内 ——
+     * 白底上几乎看不出是阴影，只让卡片边缘不像贴纸一样平。
+     */
+    --shadow-card: 0 1px 2px 0 rgb(19 51 107 / 0.04), 0 2px 8px -2px rgb(19 51 107 / 0.06);
+    --shadow-card-hover:
+        0 1px 2px 0 rgb(19 51 107 / 0.05), 0 4px 12px -2px rgb(19 51 107 / 0.08);
+}
+
+:root {
+    /* 表面：白底 + myGray 灰阶（theme.ts myWhite / myGray） */
+    --background: #ffffff;
+    --foreground: #1d2532;
+    --card: #ffffff;
+    --card-foreground: #1d2532;
+    --popover: #ffffff;
+    --popover-foreground: #1d2532;
+
+    /* 主色：primary.600 #3370FF */
+    --primary: #3370ff;
+    --primary-foreground: #ffffff;
+
+    --secondary: #f4f4f7;
+    --secondary-foreground: #383f50;
+    --muted: #f7f8fa;
+    --muted-foreground: #667085;
+    /* hover 底色用 primary.50 */
+    --accent: #f0f4ff;
+    --accent-foreground: #2b5fd9;
+
+    --destructive: #d92d20;
+    --destructive-foreground: #ffffff;
+    --success: #039855;
+    --success-foreground: #ffffff;
+    --warning: #f79009;
+    --warning-foreground: #ffffff;
+
+    /* 描边：borderColor.low / base / high */
+    --border: #e8ebf0;
+    --border-strong: #c4cbd7;
+    --input: #e8ebf0;
+    /* focus 环对齐 shadowLight：primary 15% */
+    --ring: #94b5ff;
+
+    /* 图表：主色 + adora + yellow + green + 中性 */
+    --chart-1: #3370ff;
+    --chart-2: #8774ee;
+    --chart-3: #fdb022;
+    --chart-4: #12b76a;
+    --chart-5: #8a95a7;
+
+    /* 圆角对齐 radii.md (.5rem) */
+    --radius: 0.5rem;
+
+    --sidebar: #fbfbfc;
+    --sidebar-foreground: #383f50;
+    --sidebar-primary: #3370ff;
+    --sidebar-primary-foreground: #ffffff;
+    --sidebar-accent: #f0f4ff;
+    --sidebar-accent-foreground: #2b5fd9;
+    --sidebar-border: #e8ebf0;
+    --sidebar-ring: #94b5ff;
+
+    /*
+     * 登录页弥散渐变（视觉来源：用户 2026-10-27 提供的配色参考）。
+     * 只服务于 /login 的背景与表单焦点色，不参与管理台的语义色 ——
+     * 后台仍然以 --primary #3370FF 为准，避免两套主色打架。
+     */
+    --auth-blue: #598bfd;
+    --auth-mint: #9ad4cb;
+    --auth-teal: #35b3c9;
+    --auth-canvas: #f3f7fd;
+}
+
+/*
+ * 深色：参考项目没有深色主题，这里的值由同一套色阶反推（myGray 深端 + primary.400），
+ * 属于派生结果，不是参考项目的既有实现。
+ */
+.dark {
+    --background: #111824;
+    --foreground: #f4f4f7;
+    --card: #1d2532;
+    --card-foreground: #f4f4f7;
+    --popover: #1d2532;
+    --popover-foreground: #f4f4f7;
+
+    --primary: #5e8fff;
+    --primary-foreground: #111824;
+
+    --secondary: #383f50;
+    --secondary-foreground: #f4f4f7;
+    --muted: #1d2532;
+    --muted-foreground: #8a95a7;
+    --accent: #2450b5;
+    --accent-foreground: #e1eaff;
+
+    --destructive: #f97066;
+    --destructive-foreground: #111824;
+    --success: #32d583;
+    --success-foreground: #111824;
+    --warning: #fdb022;
+    --warning-foreground: #111824;
+
+    --border: rgb(255 255 255 / 10%);
+    --border-strong: rgb(255 255 255 / 18%);
+    --input: rgb(255 255 255 / 14%);
+    --ring: #487fff;
+
+    --chart-1: #5e8fff;
+    --chart-2: #9e8dfb;
+    --chart-3: #fdb022;
+    --chart-4: #32d583;
+    --chart-5: #8a95a7;
+
+    --sidebar: #1d2532;
+    --sidebar-foreground: #f4f4f7;
+    --sidebar-primary: #5e8fff;
+    --sidebar-primary-foreground: #111824;
+    --sidebar-accent: #383f50;
+    --sidebar-accent-foreground: #e1eaff;
+    --sidebar-border: rgb(255 255 255 / 10%);
+    --sidebar-ring: #487fff;
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+    scrollbar-width: thin;
+    scrollbar-color: color-mix(in oklab, var(--muted-foreground) 32%, transparent)
+      transparent;
+  }
+
+  *::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+
+  *::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  *::-webkit-scrollbar-thumb {
+    border: 3px solid transparent;
+    border-radius: 9999px;
+    background-color: color-mix(in oklab, var(--muted-foreground) 32%, transparent);
+    background-clip: content-box;
+  }
+
+  *::-webkit-scrollbar-thumb:hover {
+    background-color: color-mix(in oklab, var(--muted-foreground) 50%, transparent);
+  }
+
+  html {
+    @apply font-sans;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+    min-width: 320px;
+    margin: 0;
+    font-size: 14px;
+    line-height: 1.5;
+  }
+
+  #root {
+    min-height: 100dvh;
+  }
+
+  /* 焦点可见性：参考项全局关掉了焦点环，这里保留（无障碍要求）。 */
+  :focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/*
+ * 可点击元素统一用 pointer 光标。
+ *
+ * Tailwind 4 的 preflight 把 button 元素默认光标改成了 default
+ * （浏览器原生是 pointer），所以不写这条的话所有按钮悬停都是箭头，
+ * 看起来像"不能点"。这里兜底一次，个别需要别的光标的地方再用工具类覆盖。
+ *
+ * 禁用的按钮用 not-allowed：它比箭头更能表达"这里不能点，但原因在别处"。
+ */
+button:not(:disabled),
+[role="button"]:not([aria-disabled="true"]),
+a[href],
+label[for],
+summary,
+select:not(:disabled) {
+  cursor: pointer;
+}
+
+button:disabled,
+[aria-disabled="true"] {
+  cursor: not-allowed;
+}
+
+/* ---------------------------------------------------------------------------
+ * 登录页弥散渐变
+ *
+ * 视觉来源：用户 2026-10-27 提供的配色参考
+ * （#598BFD / #9AD4CB / #35B3C9），登记在 docs/visual-reference.md。
+ *
+ * 为什么不用「几个圆 + filter: blur()」：大面积高斯模糊在低端核显上会掉帧，
+ * 而且圆形边界在渐隐不充分时会出现硬边。这里改用 radial-gradient 自身渐隐
+ * 到 transparent —— 光斑是"画"出来的，不是"糊"出来的，代价只有一个合成层。
+ *
+ * 色值统一走 --auth-* token：背景只借这几支颜色，不动管理台的 --primary。
+ * ------------------------------------------------------------------------- */
+/*
+ * 弥散渐变画布。
+ *
+ * 定位写在 CSS 里而不是交给 Tailwind：这个类同时负责铺满视口和背景层，
+ * 拆成两处时很容易被 `position: relative` 覆盖成 0 高度
+ * （实测过：光斑全都落在视口外，页面看起来就是一张白纸）。
+ *
+ * 观感对齐 FastGPT 登录页：主体仍是白，颜色只从四角和顶边"洇"进来，
+ * 中间留给卡片。所以底色浅、光斑透明度低、白色中心层给得很足。
+ */
+.auth-canvas {
+    position: absolute;
+    inset: 0;
+    overflow: hidden;
+    isolation: isolate;
+    background-color: var(--auth-canvas);
+    background-image:
+        radial-gradient(
+            64% 56% at 50% 44%,
+            rgb(255 255 255 / 0.98) 0%,
+            rgb(255 255 255 / 0.82) 42%,
+            rgb(255 255 255 / 0.3) 68%,
+            rgb(255 255 255 / 0) 88%
+        ),
+        linear-gradient(158deg, #f6fbff 0%, #fbfdff 40%, #f7fcfa 72%, #f1faf7 100%);
+}
+
+.auth-glow {
+    position: absolute;
+    border-radius: 9999px;
+    pointer-events: none;
+    aspect-ratio: 1.15;
+    will-change: transform;
+}
+
+.auth-glow--mint {
+    top: -30%;
+    left: -20%;
+    width: min(54rem, 132vw);
+    background: radial-gradient(
+        closest-side,
+        color-mix(in oklab, var(--auth-mint) 46%, transparent) 0%,
+        color-mix(in oklab, var(--auth-mint) 22%, transparent) 46%,
+        transparent 78%
+    );
+    animation: auth-drift-a 34s ease-in-out infinite alternate;
+}
+
+.auth-glow--blue {
+    top: -34%;
+    right: -22%;
+    width: min(60rem, 142vw);
+    background: radial-gradient(
+        closest-side,
+        color-mix(in oklab, var(--auth-blue) 34%, transparent) 0%,
+        color-mix(in oklab, var(--auth-blue) 16%, transparent) 46%,
+        transparent 78%
+    );
+    animation: auth-drift-b 40s ease-in-out infinite alternate;
+}
+
+.auth-glow--teal {
+    bottom: -34%;
+    left: -18%;
+    width: min(48rem, 120vw);
+    background: radial-gradient(
+        closest-side,
+        color-mix(in oklab, var(--auth-teal) 20%, transparent) 0%,
+        color-mix(in oklab, var(--auth-teal) 10%, transparent) 46%,
+        transparent 78%
+    );
+    animation: auth-drift-a 46s ease-in-out infinite alternate-reverse;
+}
+
+.auth-glow--sky {
+    right: -20%;
+    bottom: -30%;
+    width: min(44rem, 114vw);
+    background: radial-gradient(
+        closest-side,
+        color-mix(in oklab, var(--auth-mint) 34%, transparent) 0%,
+        color-mix(in oklab, var(--auth-mint) 16%, transparent) 48%,
+        transparent 78%
+    );
+    animation: auth-drift-b 38s ease-in-out infinite alternate-reverse;
+}
+
+/* 中心再压一层极淡的冷色，让卡片的白色有"底色"，而不是浮在纯白上。 */
+.auth-glow--core {
+    top: 42%;
+    left: 50%;
+    width: min(52rem, 128vw);
+    aspect-ratio: 1.5;
+    transform: translate(-50%, -50%);
+    background: radial-gradient(
+        closest-side,
+        color-mix(in oklab, var(--auth-blue) 10%, transparent) 0%,
+        color-mix(in oklab, var(--auth-teal) 6%, transparent) 55%,
+        transparent 82%
+    );
+}
+
+/* 极细颗粒：大半径渐变在 8bit 屏上容易出现色带，颗粒用来"打散"它。 */
+.auth-grain {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    opacity: 0.035;
+    mix-blend-mode: multiply;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='180' height='180' filter='url(%23n)'/%3E%3C/svg%3E");
+    background-size: 180px 180px;
+}
+
+@keyframes auth-drift-a {
+    from {
+        transform: translate3d(0, 0, 0) scale(1);
+    }
+    to {
+        transform: translate3d(2.5%, 2%, 0) scale(1.06);
+    }
+}
+
+@keyframes auth-drift-b {
+    from {
+        transform: translate3d(0, 0, 0) scale(1.04);
+    }
+    to {
+        transform: translate3d(-2%, 3%, 0) scale(1);
+    }
+}
+
+/* 卡片入场：只做一次 400ms 的位移+淡入，不干扰输入。 */
+.auth-rise {
+    animation: auth-rise 420ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+/*
+ * 登录卡片。
+ *
+ * 尺寸按 FastGPT 登录卡的实测 CSS（用户提供）并微调：
+ *   width: 540px; min-height: 600px; padding: 80px; border-radius: 16px;
+ *   box-shadow: rgba(30,64,175,.1) 0 16px 40px, rgba(15,23,42,.06) 0 1px 3px;
+ *
+ * 用 `min-height` 而不是 `height`：注册模式多一个昵称字段、一行密码提示和
+ * 一条管理员说明，写死总高会被内容顶破。内容区 = 540 - 160 = 380px。
+ *
+ * 900px 以下（平板/手机）改为自适应宽度 + 收紧内边距：80px 在 358px 宽的
+ * 手机上会把表单压成 198px，输入框挤到不能用。
+ */
+.auth-card {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    width: 100%;
+    max-width: 33.75rem; /* 540px */
+    border-radius: 1rem;
+    background: #ffffff;
+    box-shadow:
+        rgb(30 64 175 / 0.1) 0 16px 40px,
+        rgb(15 23 42 / 0.06) 0 1px 3px;
+}
+
+@media (min-width: 900px) {
+    .auth-card {
+        min-height: 37.5rem; /* 600px */
+        padding: 80px;
+    }
+}
+
+@media (max-width: 899px) {
+    .auth-card {
+        padding: clamp(1.75rem, 7vw, 2.75rem);
+    }
+}
+
+@keyframes auth-rise {
+    from {
+        opacity: 0;
+        transform: translateY(10px) scale(0.995);
+    }
+    to {
+        opacity: 1;
+        transform: none;
+    }
+}
+/*
+  Toast 入场：自下而上浮 8px。
+  没引 tailwindcss-animate —— 一条 keyframes 就够，不值得多一个依赖。
+*/
+@keyframes toast-rise {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.toast-rise {
+  animation: toast-rise 180ms ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .toast-rise {
+    animation: none;
+  }
+}

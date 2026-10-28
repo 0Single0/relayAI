@@ -1,0 +1,251 @@
+# relayAI
+
+自用的 AI 反代网关 + 管理台。
+
+- **网关**（Rust）：对下游暴露 OpenAI Chat Completions / OpenAI Responses / Anthropic Messages 三种协议入口；对上游调度 WorkBuddy / Trae / 自定义渠道商的账号池。
+- **管理台**（Go + React）：渠道、账号、密钥、用量、任务、设置。
+
+> 执行以 [docs/SPEC.md](docs/SPEC.md) 为准。
+
+## 技术栈
+
+| 层 | 选型 |
+| --- | --- |
+| 前端 | React 19 + TypeScript + Vite + Tailwind CSS 4 + shadcn/ui |
+| 管理面 | Go 1.24+，标准库 `net/http` + pgx |
+| 网关 | Rust 1.80+，axum + reqwest + sqlx |
+| 数据库 | PostgreSQL 16+ |
+| 图表 | Recharts |
+| 图标 | Lucide |
+
+## 目录
+
+```text
+relayAI/
+├── frontend/                 # React 管理台
+│   └── src/
+│       ├── api/              # 按业务分组的接口
+│       ├── components/       # common（共享）+ ui（shadcn 原语）
+│       ├── pages/            # 目录级页面
+│       ├── routes/           # 路由与导航元数据
+│       └── styles/           # 主题 token
+├── backend/                  # Go 管理面
+│   ├── backend.go
+│   ├── backend.api           # API 契约说明（不用于生成）
+│   └── internal/
+│       ├── config/           # 配置
+│       ├── database/         # 连接池 + 迁移（含 migrations/*.sql）
+│       ├── gateway/          # Rust 网关内部接口客户端
+│       ├── handler/          # HTTP 路由与处理器
+│       ├── httpx/            # 统一响应与错误信封
+│       ├── store/            # 数据访问层
+│       └── svc/              # 服务上下文
+├── gateway/                  # Rust 网关
+│   └── src/
+│       ├── main.rs
+│       ├── secrets.rs        # 主密钥（环境变量）
+│       ├── sse.rs            # SSE 帧重组
+│       └── gateway/
+│           ├── channels/     # 渠道适配器
+│           ├── core/         # 调度、选号、矩阵、亲和
+│           ├── protocol/     # 三协议编解码 + CIR
+│           ├── server/       # /v1/* 与 /internal/*
+│           ├── keyauth.rs    # Key 鉴权与隔离
+│           ├── storage.rs    # PostgreSQL
+│           └── state.rs      # 共享状态
+├── scripts/                  # 冒烟测试与验证脚本
+└── docs/                     # 规划与规格文档
+```
+
+## 环境要求
+
+- Node.js >= 22.12（已验证 22.19.0）
+- pnpm 11（`packageManager` 已锁定）
+- Go >= 1.24（本机验证 1.25.5）
+- Rust >= 1.80
+- PostgreSQL >= 16（本机验证 18.2）
+
+国内网络建议：
+- Go：`GOPROXY=https://goproxy.cn,direct`
+- Rust：`~/.cargo/config.toml` 配镜像源
+
+## 首次启动
+
+### 1. 建库
+
+```powershell
+psql -U postgres -c "CREATE DATABASE relayai WITH ENCODING 'UTF8' TEMPLATE template0;"
+```
+
+表结构由 Go 侧迁移器自动创建（`AutoMigrate: true`），不需要手工执行 SQL。
+
+### 2. 配置环境变量
+
+复制 `.env.example` 为 `.env`，填入：
+
+```dotenv
+DATABASE_URL=postgresql://postgres:<密码>@localhost:5432/relayai
+RELAYAI_MASTER_KEY=<32 字节 base64>
+GATEWAY_INTERNAL_TOKEN=<任意随机串>
+GATEWAY_PORT=18788
+GATEWAY_BASE_URL=http://127.0.0.1:18788
+```
+
+生成主密钥：
+
+```powershell
+[Convert]::ToBase64String((1..32 | ForEach-Object { Get-Random -Max 256 }))
+```
+
+> **主密钥丢失 = 所有账号凭据作废**，必须重新登录。备份它。
+
+### 3. 启动网关（终端 1）
+
+```powershell
+cd gateway
+cargo run
+```
+
+看到 `已监听 http://127.0.0.1:18788` 即成功。端口被占用时会自动回退（18788 → 18789 → …），
+**此时要把 `GATEWAY_BASE_URL` 改成实际端口**，否则管理面会打到别人身上。
+
+> 为什么不是 8788 / 8790：这两个端口在本机已被其他常驻服务占用，用它们必然触发回退。
+
+### 4. 启动管理面（终端 2）
+
+```powershell
+cd backend
+go run backend.go
+```
+
+看到 `Starting server at 0.0.0.0:8888` 即成功。
+
+### 5. 启动前端（终端 3）
+
+```powershell
+pnpm --dir frontend install
+pnpm --dir frontend dev
+```
+
+访问 `http://localhost:5173/`。
+
+## 验证
+
+```powershell
+# 前端
+pnpm --dir frontend lint
+pnpm --dir frontend typecheck
+pnpm --dir frontend build
+
+# 管理面
+cd backend
+go vet ./...
+go build ./...
+
+# 网关
+cd gateway
+cargo build
+cargo test
+```
+
+端到端脚本（需要三个服务都在跑）：
+
+```powershell
+# 管理面 API（22 项）
+node scripts/smoke-api.mjs
+
+# 三协议（12 项）
+node scripts/test-protocols.mjs http://127.0.0.1:18788
+
+# Key 隔离（15 项）
+node scripts/test-key-isolation.mjs http://127.0.0.1:18788 http://127.0.0.1:8888/api/v1
+
+# 前端路由（28 项：14 路由 × 2 宽度）
+node scripts/audit-routes.mjs http://localhost:5173
+```
+
+## 用起来
+
+### 建渠道
+
+管理台「渠道管理 → 新建渠道」。三种类型：
+
+| 类型 | 说明 | 需要 |
+| --- | --- | --- |
+| WorkBuddy | 登录态反代（国内/国际） | 账号登录 |
+| Trae | 两段式会话协议 | 账号登录（要粘贴回调地址） |
+| 自定义供应商 | OpenAI / Anthropic 兼容端点 | 手填 API Key |
+
+### 加账号
+
+渠道详情页「添加账号」。WorkBuddy 走授权页轮询；Trae 需要把浏览器地址栏的回调地址粘回来；
+自定义供应商直接填 Key。
+
+### 建密钥
+
+「密钥管理 → 新建密钥」。**明文只显示一次**，关掉就再也看不到。
+
+密钥可绑：
+- **渠道白名单**：这个 Key 只能用哪些渠道（空 = 不限）
+- **模型白名单**：只能用哪些模型（空 = 不限）
+
+两个都空 = 完全放开（升级前的行为）。
+
+### 客户端接入
+
+```
+Base URL: http://127.0.0.1:18788/v1
+API Key:  sk-...（管理台创建的那串）
+```
+
+三种协议都支持：
+
+| 客户端类型 | 端点 |
+| --- | --- |
+| OpenAI 兼容（Cursor / Cherry Studio / 脚本） | `POST /v1/chat/completions` |
+| Anthropic 兼容（Claude Code） | `POST /v1/messages` |
+| OpenAI Responses（Codex） | `POST /v1/responses` |
+
+模型清单：`GET /v1/models`（**按 Key 白名单过滤**）。
+
+## 请求约定
+
+- 所有非流式请求统一走 `frontend/src/utils/request.ts` 的 `APIRequest`。
+- 响应信封 `{ code, success, msg, data }`，`code` 为 `0` 或 `200` 视为成功。
+- 网关的错误信封按协议形状返回（OpenAI / Anthropic 各一套）。
+- 403 与 503 严格区分：403 = Key 无权（改配置），503 = 暂时没容量（重试或补账号）。
+
+## 路由与页面
+
+| 路由 | 页面 |
+| --- | --- |
+| `/dashboard` | 仪表盘 |
+| `/channels` `/channels/:id` | 渠道管理与详情 |
+| `/accounts` `/accounts/:id` | 账号管理与详情 |
+| `/status` | 渠道状态 |
+| `/tasks` `/tasks/:channelId` | 任务总览与渠道任务 |
+| `/usage` `/usage/:id` | 使用记录与详情 |
+| `/stats` | 统计报表 |
+| `/keys` | 密钥管理 |
+| `/settings` | 设置 |
+
+导航元数据在 `src/routes/navigation.ts`；「任务」组的二级菜单由
+`GET /api/v1/tasks/channels` 动态决定（只列出有运营能力的渠道）。
+
+## 当前边界
+
+- **自用定位**：无用户注册、无充值、无多租户。
+- **无向量能力**：不提供 `/v1/embeddings`。
+- 视觉参考 FastGPT，只取 design token，布局仍是 `Aside + Header + Main`（见 [docs/visual-reference.md](docs/visual-reference.md)）。
+- 不展示伪造数据；网关不可用时界面显示"状态未知"而不是编造默认值。
+
+## 文档
+
+| 文档 | 内容 |
+| --- | --- |
+| [SPEC.md](docs/SPEC.md) | **实施规格书**：不变量、数据模型、API 契约、页面规格、验收清单 |
+| [product-plan.md](docs/product-plan.md) | 产品定位、导航信息架构、计费口径 |
+| [migration-plan.md](docs/migration-plan.md) | 参考项目盘点、双服务边界、PG 迁移 |
+| [task-module.md](docs/task-module.md) | 运营任务：菜单结构、执行语义 |
+| [key-isolation.md](docs/key-isolation.md) | Key 的渠道 / 模型隔离 |
+| [visual-reference.md](docs/visual-reference.md) | 视觉参考登记与 design token |

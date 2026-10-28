@@ -1,0 +1,27 @@
+# Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.env.local
+frontend/.env.*.local
+
+# Backend
+backend/bin/
+backend/*.exe
+backend/.env
+
+# Gateway（Rust）
+gateway/target/
+gateway/.env
+
+# Local secrets — never commit
+.env
+.env.local
+
+# Local tooling and QA artifacts
+.tmp/
+artifacts/
+.vscode/
+.idea/
+*.log
+.DS_Store
+Thumbs.db

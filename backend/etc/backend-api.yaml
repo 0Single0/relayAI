@@ -1,0 +1,17 @@
+Name: relayai-backend-api
+Host: 0.0.0.0
+Port: 8888
+Mode: dev
+
+# PostgreSQL。生产环境用环境变量 DATABASE_URL 覆盖，不要把密码提交进仓库。
+Database:
+  DataSource: postgresql://postgres:root@localhost:5432/relayai
+  MaxConns: 16
+  MinConns: 2
+  AutoMigrate: true
+
+# Rust 网关的内部接口。InternalToken 用环境变量 GATEWAY_INTERNAL_TOKEN 覆盖。
+Gateway:
+  BaseURL: http://127.0.0.1:18788
+  InternalToken: ""
+  TimeoutMs: 15000

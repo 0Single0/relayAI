@@ -1,0 +1,48 @@
+[package]
+name = "relayai-gateway"
+version = "0.1.0"
+edition = "2021"
+description = "relayAI 反代网关：多协议入口 + 多渠道账号池调度"
+publish = false
+
+[dependencies]
+# HTTP 服务与客户端
+axum = "0.8"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "sync", "net", "signal"] }
+reqwest = { version = "0.12", features = ["json", "stream"] }
+tower = "0.5"
+
+# 序列化与异步
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+async-trait = "0.1"
+futures-util = "0.3"
+
+# 数据库
+sqlx = { version = "0.8", features = ["runtime-tokio", "tls-rustls", "postgres", "uuid", "chrono", "json"] }
+
+# 时间
+chrono = { version = "0.4", features = ["serde"] }
+
+# 加密与编码
+aes-gcm = "0.11"
+base64 = "0.22"
+sha2 = "0.10"
+hmac = "0.12"
+getrandom = "0.4"
+zeroize = { version = "1.8", features = ["alloc"] }
+
+# 杂项
+uuid = { version = "1", features = ["v4", "serde"] }
+regex = "1"
+anyhow = "1"
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+tempfile = "3"
+
+[profile.release]
+codegen-units = 1
+lto = "thin"
+opt-level = 3
+strip = true

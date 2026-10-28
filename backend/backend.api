@@ -1,0 +1,43 @@
+syntax = "v1"
+
+info (
+	title:   "relayAI API"
+	desc:    "relayAI 管理面 REST API（本文档为契约说明；路由由 internal/handler 手写注册）"
+	author:  "relayAI"
+	version: "v0.3.0"
+)
+
+// 说明：本文件描述 API 契约，**不再用于 goctl 生成**。
+//
+// 原因（SPEC 7）：
+//   1. 管理面有大量 PATCH 部分更新（只传要改的字段），goctl 的 optional
+//      语义无法区分"没传"与"传了零值"，会静默把字段清零；
+//   2. 部分响应带 `interface{}`（如渠道 options、设置值），生成的结构体没有类型收益；
+//   3. 需要统一的错误信封与分页封装，手写更直接。
+//
+// 路由注册见 internal/handler/routes.go，契约与本文保持一致。
+
+type HealthRequest {}
+
+type HealthData {
+	Service  string `json:"service"`
+	Status   string `json:"status"`
+	Version  string `json:"version"`
+	Database string `json:"database"` // up | down
+	UptimeMs int64  `json:"uptimeMs"`
+}
+
+type HealthResponse {
+	Code    int        `json:"code"`
+	Success bool       `json:"success"`
+	Msg     string     `json:"msg"`
+	Data    HealthData `json:"data"`
+}
+
+@server (
+	prefix: /api/v1
+)
+service backend-api {
+	@handler HealthHandler
+	get /health (HealthRequest) returns (HealthResponse)
+}
