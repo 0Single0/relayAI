@@ -183,7 +183,7 @@ fn stream_response(
                 Ok(frame) => session.adapter.parse_event(&frame),
                 Err(error) => {
                     status = "upstream_aborted";
-                    error_detail.get_or_insert_with(|| error.message.clone());
+                    error_detail.get_or_insert_with(|| error.describe());
                     vec![CanonicalEvent::Error {
                         message: error.message,
                     }]
@@ -197,6 +197,7 @@ fn stream_response(
                         reported_usage = true;
                     }
                     CanonicalEvent::Error { message } => {
+                        status = "upstream_aborted";
                         stop = true;
                         error_detail.get_or_insert_with(|| message.clone());
                     }
@@ -248,14 +249,18 @@ async fn collect_message(
     let message_id = format!("msg_{}", Uuid::new_v4().simple());
     let mut events = Vec::new();
     let mut ttft_ms: Option<u64> = None;
+    let mut error_detail = None;
     loop {
         let next = session.frames.next().await;
         let Some(frame) = next else { break };
         let batch = match frame {
             Ok(frame) => session.adapter.parse_event(&frame),
-            Err(error) => vec![CanonicalEvent::Error {
-                message: error.message,
-            }],
+            Err(error) => {
+                error_detail.get_or_insert_with(|| error.describe());
+                vec![CanonicalEvent::Error {
+                    message: error.message,
+                }]
+            }
         };
         for event in &batch {
             if ttft_ms.is_none()
@@ -291,7 +296,7 @@ async fn collect_message(
             _ => None,
         })
         .unwrap_or_default();
-    let error_detail = message.as_ref().err().map(|error| error.message.clone());
+    let error_detail = error_detail.or_else(|| message.as_ref().err().map(|error| error.describe()));
     record_usage(
         &state,
         &session,

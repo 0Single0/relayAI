@@ -352,6 +352,21 @@ impl ChannelAdapter for WorkbuddyChannel {
 /// `upstream_model` 只用来描述**范围**：这个渠道的限额是按模型的，
 /// 6004 要落到 [`ErrorScope::AccountModel`]，不能拉黑整个账号。
 pub fn refine(status: u16, body: &str, upstream_model: &str) -> GatewayError {
+    // 只认结构化错误码，避免请求 ID 或正文中碰巧出现的数字触发账号限制。
+    if serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .and_then(|value| value.get("code").cloned())
+        .is_some_and(|code| code.as_i64() == Some(11140) || code.as_str() == Some("11140"))
+    {
+        return GatewayError::new(
+            ErrorKind::AccountRestricted,
+            ErrorScope::Account,
+            403,
+            "账号存在异常行为，已被上游限制使用（错误码 11140）；请通过官方反馈渠道申诉",
+            false,
+        )
+        .with_upstream(openai_compat::raw(body));
+    }
     // 渠道校验拦截要单独认出来：它不是"请求不合法"，重试（换号）就能过。
     // 真机抓包（字节级）确认错误码是**纯数字 11-128**（{"code":11-128,...}）——
     // 一直以来写成 "11-128"（带连字符）是被最初贴报文时的书写误导，整整 4 轮
@@ -573,6 +588,23 @@ mod tests {
         // 通用分类路径同样保留原文。
         let generic = refine(429, "slow down please", "glm-5.3");
         assert_eq!(generic.upstream.as_deref(), Some("slow down please"));
+    }
+
+    #[test]
+    fn account_restriction_is_not_content_policy() {
+        let body = r#"{"code":11140,"msg":"request illegal","requestId":"restriction-request","displayMsg":{"zh":"账号存在异常行为，已被限制使用"},"displayTips":{"zh":"请提交反馈申诉"}}"#;
+        for status in [400, 403] {
+            let error = refine(status, body, "glm-5.3");
+            assert_eq!(error.kind, ErrorKind::AccountRestricted);
+            assert_eq!(error.scope, ErrorScope::Account);
+            assert!(!error.retryable);
+            assert_eq!(error.status, 403);
+            assert!(error.message.contains("限制使用"));
+            assert!(error.describe().contains("restriction-request"));
+            assert!(error.describe().contains("请提交反馈申诉"));
+        }
+        assert_eq!(refine(403, r#"{"code":"11140"}"#, "m").kind, ErrorKind::AccountRestricted);
+        assert_eq!(refine(403, r#"{"code":999,"requestId":"11140"}"#, "m").kind, ErrorKind::ContentPolicy);
     }
 
     /// 11-128（渠道校验拦截）：**字符串码**，带连字符，数值扫描认不到。

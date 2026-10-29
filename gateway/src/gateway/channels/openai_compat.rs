@@ -14,17 +14,18 @@ pub fn classify_openai_error(status: u16, body: &str) -> GatewayError {
     classify_status(status, body).with_upstream(raw(body))
 }
 
-/// 上游原文（保留换行，截断到 600 字符）——给"上游返回了什么"用。
+/// 上游原文保留换行，最多 16 KiB；600 字节会截掉本地化说明和申诉提示。
 pub fn raw(body: &str) -> String {
+    const MAX_BYTES: usize = 16 * 1024;
     let trimmed = body.trim();
-    if trimmed.len() <= 600 {
+    if trimmed.len() <= MAX_BYTES {
         return trimmed.to_string();
     }
-    let mut cut = 600;
+    let mut cut = MAX_BYTES;
     while cut > 0 && !trimmed.is_char_boundary(cut) {
         cut -= 1;
     }
-    format!("{}…", &trimmed[..cut])
+    format!("{}\n…（上游响应超过 16 KiB，已截断）", &trimmed[..cut])
 }
 
 fn classify_status(status: u16, body: &str) -> GatewayError {
@@ -81,6 +82,20 @@ pub fn parse_openai_chunk(frame: &str) -> Vec<CanonicalEvent> {
     let Ok(value) = serde_json::from_str::<Value>(frame) else {
         return Vec::new();
     };
+    // HTTP 200 的 SSE 也可能携带错误信封；不能把它当空帧忽略并记成成功。
+    if let Some(error) = value.get("error").filter(|error| !error.is_null()) {
+        let reason = error
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap_or("上游返回流内错误");
+        return vec![CanonicalEvent::Error {
+            message: format!(
+                "{}；上游返回：{}",
+                short(reason, "上游返回流内错误"),
+                raw(frame)
+            ),
+        }];
+    }
     let mut events = Vec::new();
 
     if let Some(usage) = value.get("usage").filter(|usage| !usage.is_null()) {
@@ -337,6 +352,30 @@ mod tests {
             classify_openai_error(418, "teapot").kind,
             ErrorKind::InvalidRequest
         );
+    }
+
+    #[test]
+    fn upstream_diagnostics_keep_localized_tips_and_bound_large_bodies() {
+        let body = format!(r#"{{"msg":"{}","requestId":"upstream-id","displayTips":{{"zh":"请提交反馈申诉"}}}}"#, "x".repeat(700));
+        assert_eq!(raw(&body), body);
+        let error = classify_openai_error(403, &body);
+        assert!(error.describe().contains("upstream-id"));
+        assert!(error.describe().contains("请提交反馈申诉"));
+        let clipped = raw(&"错".repeat(10_000));
+        assert!(clipped.len() < 16 * 1024 + 100);
+        assert!(clipped.ends_with("已截断）"));
+        assert_eq!(raw("  \n "), "");
+    }
+
+    #[test]
+    fn sse_error_envelope_is_a_failure_with_upstream_diagnostics() {
+        let frame = r#"{"error":{"code":"account_restricted","message":"账号已被限制使用","requestId":"stream-error-id"}}"#;
+        let events = parse_openai_chunk(frame);
+        assert!(matches!(&events[..], [CanonicalEvent::Error { message }] if message.contains("stream-error-id") && message.contains("账号已被限制使用")));
+        let completion = crate::gateway::protocol::encode::openai::fold(&events, "test-id", "test-model", 0);
+        assert!(completion.is_err(), "流内错误不能折叠成成功响应");
+        assert!(completion.unwrap_err().describe().contains("account_restricted"));
+        assert!(parse_openai_chunk(r#"{"error":null,"choices":[]}"#).is_empty());
     }
 
     #[test]

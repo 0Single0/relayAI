@@ -24,6 +24,8 @@ pub enum ErrorKind {
     QuotaExhausted,
     /// 403：内容审核。
     ContentPolicy,
+    /// 上游明确限制了账号，不能当成内容审核或管理端 Key 权限问题。
+    AccountRestricted,
     /// 上游 5xx。
     Upstream5xx,
     /// 连接/超时/断流。
@@ -59,7 +61,7 @@ impl ErrorKind {
         match self {
             Self::InvalidRequest | Self::ModelNotFound | Self::Unsupported => "invalid_request_error",
             Self::AuthExpired => "authentication_error",
-            Self::KeyForbidden | Self::ContentPolicy => "permission_error",
+            Self::KeyForbidden | Self::ContentPolicy | Self::AccountRestricted => "permission_error",
             Self::RateLimited | Self::NoAccount => "rate_limit_error",
             Self::QuotaExhausted => "insufficient_quota",
             Self::ChannelBlocked => "channel_blocked_error",

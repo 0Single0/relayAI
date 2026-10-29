@@ -297,6 +297,8 @@ impl PoolAccount {
             // KeyForbidden 同理：那是**调用方权限**问题，与账号健康无关，
             // 绝不能因为某个 Key 越权访问就把账号冷却掉。
             ErrorKind::ContentPolicy
+            // 只记录上游的限制结论；没有恢复时刻，不推断永久停用或自动解封。
+            | ErrorKind::AccountRestricted
             | ErrorKind::InvalidRequest
             | ErrorKind::ModelNotFound
             | ErrorKind::NoAccount

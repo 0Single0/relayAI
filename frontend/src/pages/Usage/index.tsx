@@ -9,8 +9,8 @@ import { EmptyState } from "@/components/common/EmptyState";
 import { ErrorState } from "@/components/common/ErrorState";
 import { MyBox } from "@/components/common/MyBox";
 import { Pagination } from "@/components/common/Pagination";
-import { StatusBadge } from "@/components/common/StatusBadge";
 import { CostBreakdown } from "@/pages/Usage/components/CostBreakdown";
+import { UsageStatus as UsageStatusBadge } from "@/pages/Usage/components/UsageStatus";
 import { Button } from "@/components/ui/button";
 import {
   Select,
@@ -25,36 +25,6 @@ import { getRequestErrorMessage } from "@/utils/request";
 
 const ALL = "__all__";
 const PAGE_SIZE = 50;
-
-const statusTone = (status: UsageStatus) => {
-  switch (status) {
-    case "completed":
-      return "success" as const;
-    case "rejected":
-      return "neutral" as const;
-    case "client_aborted":
-      return "warning" as const;
-    default:
-      return "danger" as const;
-  }
-};
-
-const statusLabel = (status: UsageStatus) => {
-  switch (status) {
-    case "completed":
-      return "成功";
-    case "failed":
-      return "失败";
-    case "client_aborted":
-      return "客户端中断";
-    case "upstream_aborted":
-      return "上游断流";
-    case "rejected":
-      return "未调度";
-    default:
-      return status;
-  }
-};
 
 /**
  * 协议的中文标签。
@@ -451,10 +421,10 @@ export const UsagePage = () => {
     {
       key: "status",
       header: "状态",
-      width: "88px",
+      width: "144px",
       render: (log) => (
         <div className="flex flex-col items-start gap-0.5">
-          <StatusBadge tone={statusTone(log.status)} label={statusLabel(log.status)} />
+          <UsageStatusBadge log={log} />
           {/* 重试次数只在真的重试过时显示：每行都写"1"是噪音。 */}
           {log.attempts > 1 ? (
             <span className="text-[10px] text-warning">重试 {log.attempts - 1} 次</span>
