@@ -161,11 +161,11 @@ type Status struct {
 		Available int `json:"available"`
 	} `json:"concurrency"`
 	Matrix struct {
-		Routes     int `json:"routes"`
-		Live       int `json:"live"`
-		Builtin    int `json:"builtin"`
+		Routes     int   `json:"routes"`
+		Live       int   `json:"live"`
+		Builtin    int   `json:"builtin"`
 		AgeMs      int64 `json:"ageMs"`
-		TTLSeconds int `json:"ttlSeconds"`
+		TTLSeconds int   `json:"ttlSeconds"`
 	} `json:"matrix"`
 	Stats struct {
 		Requests int64 `json:"requests"`
@@ -187,6 +187,15 @@ type Status struct {
 	Warnings []string         `json:"warnings"`
 }
 
+// ModelLimit 是一条模型级限流：哪个模型、什么时候恢复。
+//
+// 上游按**模型**限额是常态（而不是整号封禁）。分开表达是为了让界面
+// 能说清"号还能用，只是 glm-5.3 在等 30 秒"，而不是笼统报"账号不可用"。
+type ModelLimit struct {
+	Model   string `json:"model"`
+	UntilMs int64  `json:"untilMs"`
+}
+
 // AccountRuntime 是一个账号的实时运行态。
 type AccountRuntime struct {
 	ChannelID string `json:"channelId"`
@@ -196,12 +205,17 @@ type AccountRuntime struct {
 	Enabled  bool   `json:"enabled"`
 	Inflight int    `json:"inflight"`
 	// MaxInflight 是**生效值**（已把 NULL 解析成渠道默认），不会是 0。
-	MaxInflight        int      `json:"maxInflight"`
-	Ready              bool     `json:"ready"`
-	BlockedReasons     []string `json:"blockedReasons"`
-	CooldownUntilMs    int64    `json:"cooldownUntilMs"`
-	RequiresCredential bool     `json:"requiresCredential"`
-	HasCredential      bool     `json:"hasCredential"`
+	MaxInflight     int      `json:"maxInflight"`
+	Ready           bool     `json:"ready"`
+	BlockedReasons  []string `json:"blockedReasons"`
+	CooldownUntilMs int64    `json:"cooldownUntilMs"`
+	// ModelLimits 是**模型级**限流明细（上游按模型限额时只有那一个模型不可用）。
+	//
+	// 与 CooldownUntilMs 的区别必须分清：那个是整号冷却，
+	// 这个是"号还能用，只是某个模型在等" —— 后者不该被显示成"账号不可用"。
+	ModelLimits        []ModelLimit `json:"modelLimits"`
+	RequiresCredential bool         `json:"requiresCredential"`
+	HasCredential      bool         `json:"hasCredential"`
 	// StaticCredential 表示该账号是静态凭据（自定义供应商的 API Key）。
 	// 静态凭据没有"刷新"这回事，前端据此禁用刷新按钮。
 	StaticCredential bool `json:"staticCredential"`
@@ -276,15 +290,21 @@ func (c *Client) GetChannelCaps(ctx context.Context, channelID string) (*OpsCaps
 
 // UpstreamModel 是渠道目录里的一条模型。
 type UpstreamModel struct {
-	ID             string   `json:"id"`
-	Credits        string   `json:"credits"`
-	ContextLength  *int64   `json:"context_length"`
-	MaxOutputToken *int64   `json:"max_output_tokens"`
-	Vendor         string   `json:"vendor"`
-	Capabilities   struct {
-		Vision    bool `json:"vision"`
-		ToolCalls bool `json:"tool_calls"`
-		Reasoning bool `json:"reasoning"`
+	ID                     string            `json:"id"`
+	DisplayName            string            `json:"display_name,omitempty"`
+	Credits                string            `json:"credits"`
+	ContextLength          *int64            `json:"context_length"`
+	MaxOutputToken         *int64            `json:"max_output_tokens"`
+	Vendor                 string            `json:"vendor"`
+	ReasoningEfforts       []string          `json:"reasoning_efforts,omitempty"`
+	ReasoningEffortMap     map[string]string `json:"reasoning_effort_map,omitempty"`
+	ReasoningDefaultEffort *string           `json:"reasoning_default_effort,omitempty"`
+	Capabilities           struct {
+		Vision         bool `json:"vision"`
+		ToolCalls      bool `json:"tool_calls"`
+		Reasoning      bool `json:"reasoning"`
+		DeclaredTools  bool `json:"declared_tools"`
+		DeclaredVision bool `json:"declared_vision"`
 	} `json:"capabilities"`
 }
 
@@ -353,10 +373,10 @@ type LoginPollResult struct {
 }
 
 // PollLogin 轮询登录结果。
-func (c *Client) PollLogin(ctx context.Context, channelID, state, platform string) (*LoginPollResult, error) {
+func (c *Client) PollLogin(ctx context.Context, channelID, state, platform string, options json.RawMessage) (*LoginPollResult, error) {
 	var out LoginPollResult
 	path := "/internal/channels/" + url.PathEscape(channelID) + "/login/poll"
-	if err := c.post(ctx, path, map[string]any{"state": state, "platform": platform}, &out); err != nil {
+	if err := c.post(ctx, path, map[string]any{"state": state, "platform": platform, "options": options}, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -366,10 +386,11 @@ func (c *Client) PollLogin(ctx context.Context, channelID, state, platform strin
 func (c *Client) CompleteLogin(
 	ctx context.Context,
 	channelID, state, callback, platform string,
+	options json.RawMessage,
 ) (*LoginPollResult, error) {
 	var out LoginPollResult
 	path := "/internal/channels/" + url.PathEscape(channelID) + "/login/complete"
-	body := map[string]any{"state": state, "callback": callback, "platform": platform}
+	body := map[string]any{"state": state, "callback": callback, "platform": platform, "options": options}
 	if err := c.post(ctx, path, body, &out); err != nil {
 		return nil, err
 	}
@@ -402,6 +423,21 @@ type AccountProbe struct {
 }
 
 // ProbeAccount 用该账号的真实凭据打一次上游。
+// ResetAccountCooldowns 让网关清掉该账号的全部冷却（账号级 + 模型级）。
+//
+// 返回 `cleared` 表示**是否真的清掉了东西**：本来没在冷却时点它是无害的，
+// 但界面该区分"刚放行"和"本来就能用"。
+func (c *Client) ResetAccountCooldowns(ctx context.Context, channelID, uid string) (bool, error) {
+	var out struct {
+		Cleared bool `json:"cleared"`
+	}
+	path := "/internal/accounts/" + AccountKey(channelID, uid) + "/reset"
+	if err := c.post(ctx, path, nil, &out); err != nil {
+		return false, err
+	}
+	return out.Cleared, nil
+}
+
 func (c *Client) ProbeAccount(ctx context.Context, channelID, uid, model string) (*AccountProbe, error) {
 	var out AccountProbe
 	path := "/internal/accounts/" + AccountKey(channelID, uid) + "/probe"
@@ -434,6 +470,15 @@ func (c *Client) GetQuota(ctx context.Context, channelID, uid string) (*Quota, e
 		return nil, err
 	}
 	return out, nil
+}
+
+// RefreshQuota 强制刷新账号额度：真实打一次上游的额度接口，
+// 成功后网关内存里的快照同步更新（后续 GET /quota 与状态接口都会读到新值）。
+//
+// 与 GetQuota 的区别：那个只读网关内存（巡检每 5 分钟才刷一次），
+// 这个立即生效 —— 面板「刷新积分」按钮与 30s 自动轮询走这里。
+func (c *Client) RefreshQuota(ctx context.Context, channelID, uid string) error {
+	return c.post(ctx, "/internal/accounts/"+AccountKey(channelID, uid)+"/quota", nil, nil)
 }
 
 // ---- 任务 ----
@@ -501,9 +546,9 @@ type TaskChannelLive struct {
 // **能力来源单独一个字段**：`snapshot` 表示这几位来自内置对照表（我们按厂商
 // 官方文档维护），`none` 表示完全没有依据。两者都不该被压成"未知"。
 type CatalogCapabilities struct {
-	Vision    bool   `json:"vision"`
-	Tools     bool   `json:"tools"`
-	Reasoning bool   `json:"reasoning"`
+	Vision    bool `json:"vision"`
+	Tools     bool `json:"tools"`
+	Reasoning bool `json:"reasoning"`
 	// Source 是能力字段的来源：live / snapshot / none。
 	//
 	// 只有 none 才该显示"能力未知"：snapshot 是我们按官方对照表维护的，
@@ -513,6 +558,7 @@ type CatalogCapabilities struct {
 
 // CatalogModel 是网关导出的一个对外模型（含它在各渠道下的路由）。
 type CatalogModel struct {
+	DisplayName      string              `json:"displayName"`
 	Name             string              `json:"name"`
 	ContextWindows   []int64             `json:"contextWindows"`
 	ReasoningEfforts []string            `json:"reasoningEfforts"`
@@ -638,11 +684,11 @@ func (c *Client) CancelTaskRun(ctx context.Context, channelID, uid string) (bool
 
 // TaskProgress 是执行进度。
 type TaskProgress struct {
-	Running bool           `json:"running"`
-	Results []TaskRunItem  `json:"results"`
-	Done    int            `json:"done"`
-	Earned  int            `json:"earned"`
-	Error   string         `json:"error"`
+	Running bool          `json:"running"`
+	Results []TaskRunItem `json:"results"`
+	Done    int           `json:"done"`
+	Earned  int           `json:"earned"`
+	Error   string        `json:"error"`
 }
 
 // TaskRunItem 是一条执行结果。
@@ -688,14 +734,15 @@ func (c *Client) Reload(ctx context.Context) error {
 // 平台在**账号**上：`Platform` 必填，它决定用哪个适配器。
 // 渠道只负责"这个号算在哪个计价分组里"。
 type CreateAccountInput struct {
-	ChannelID string          `json:"channelId"`
-	UID       string          `json:"uid"`
-	Nickname  string          `json:"nickname"`
-	APIKey    string          `json:"apiKey"`
-	Platform  string          `json:"platform"`
-	BaseURL   string          `json:"baseUrl"`
-	Protocol  string          `json:"protocol"`
-	Options   json.RawMessage `json:"options"`
+	ChannelID  string          `json:"channelId"`
+	UID        string          `json:"uid"`
+	Nickname   string          `json:"nickname"`
+	APIKey     string          `json:"apiKey"`
+	Platform   string          `json:"platform"`
+	BaseURL    string          `json:"baseUrl"`
+	Protocol   string          `json:"protocol"`
+	Options    json.RawMessage `json:"options"`
+	ModelAllow []string        `json:"modelAllow"`
 }
 
 // CreateAccount 用静态凭据建号。
@@ -706,15 +753,19 @@ type CreateAccountInput struct {
 // `platform` / `baseUrl` / `protocol` / `options` 全是**账号级**上游配置：
 // 一份计价策略（渠道）下可以挂多个不同上游、不同平台的 Key。
 func (c *Client) CreateAccount(ctx context.Context, input CreateAccountInput) error {
+	if input.ModelAllow == nil {
+		input.ModelAllow = []string{}
+	}
 	body := map[string]any{
-		"channel_id": input.ChannelID,
-		"uid":        input.UID,
-		"nickname":   input.Nickname,
-		"api_key":    input.APIKey,
-		"platform":   input.Platform,
-		"base_url":   input.BaseURL,
-		"protocol":   input.Protocol,
-		"options":    input.Options,
+		"channel_id":  input.ChannelID,
+		"uid":         input.UID,
+		"nickname":    input.Nickname,
+		"api_key":     input.APIKey,
+		"platform":    input.Platform,
+		"base_url":    input.BaseURL,
+		"protocol":    input.Protocol,
+		"options":     input.Options,
+		"model_allow": input.ModelAllow,
 	}
 	return c.post(ctx, "/internal/accounts", body, nil)
 }

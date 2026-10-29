@@ -43,11 +43,10 @@ func (s *Store) UpsertCatalogModel(ctx context.Context, model CatalogModelInput)
 		-- 同步只负责"有哪些模型、多长上下文"，定价与启停是人的决定。
 		`
 
-	_, err := s.pool.Exec(ctx, query,
+	if _, err := s.exec(ctx, query,
 		model.CanonicalName, model.DisplayName,
 		model.ContextWindow, model.MaxOutput, capabilities,
-	)
-	if err != nil {
+	); err != nil {
 		return fmt.Errorf("写入模型目录失败: %w", err)
 	}
 	return nil
@@ -65,7 +64,7 @@ func (s *Store) DeleteModelsExcept(ctx context.Context, keep []string) (int64, e
 		return 0, nil
 	}
 
-	result, err := s.pool.Exec(
+	affected, err := s.exec(
 		ctx,
 		"DELETE FROM models WHERE canonical_name <> ALL($1)",
 		keep,
@@ -73,5 +72,5 @@ func (s *Store) DeleteModelsExcept(ctx context.Context, keep []string) (int64, e
 	if err != nil {
 		return 0, fmt.Errorf("清理下线模型失败: %w", err)
 	}
-	return result.RowsAffected(), nil
+	return affected, nil
 }

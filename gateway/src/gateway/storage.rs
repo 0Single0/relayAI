@@ -182,7 +182,8 @@ impl Storage {
     pub async fn list_channels(&self) -> Result<Vec<ChannelConfig>, GatewayError> {
         let rows = sqlx::query_as::<_, ChannelRow>(
             "SELECT id, name, adapter, enabled, priority, weight, options,
-                    channel_ratio::float8 AS channel_ratio
+                    channel_ratio::float8 AS channel_ratio,
+                    COALESCE(model_allow, ARRAY[]::text[]) AS model_allow
              FROM channels ORDER BY id",
         )
         .fetch_all(&self.pool)
@@ -200,6 +201,7 @@ impl Storage {
                 weight: row.weight.max(1) as u32,
                 options: row.options,
                 channel_ratio: row.channel_ratio,
+                model_allow: row.model_allow,
             })
             .collect())
     }
@@ -254,7 +256,7 @@ impl Storage {
                         Err(error) => {
                             eprintln!(
                                 "[gateway] 账号 {}/{} 凭据解密失败：{error}",
-                                row.channel_id, row.uid
+                                row.channel_id.clone().unwrap_or_default(), row.uid
                             );
                             None
                         }
@@ -294,7 +296,7 @@ impl Storage {
                 };
 
                 AccountRecord {
-                    channel_id: row.channel_id,
+                    channel_id: row.channel_id.unwrap_or_default(),
                     uid: row.uid,
                     nickname: row.nickname,
                     enabled: row.enabled,
@@ -324,6 +326,20 @@ impl Storage {
         uid: &str,
         credential: Option<&Credential>,
     ) -> Result<(), GatewayError> {
+        self.set_credential_by(channel_id, uid, credential).await
+    }
+
+    /// 按 uid 定位写凭据。
+    ///
+    /// 为什么需要：账号可以先建、后分配分组 —— 未分配的行 `channel_id` 是 NULL，
+    /// `(channel_id, uid)` 的 WHERE 永远匹配不到它。
+    /// uid 是唯一键（`accounts_uid_key`），用它定位才完整。
+    pub async fn set_credential_by(
+        &self,
+        _channel_id: &str,
+        uid: &str,
+        credential: Option<&Credential>,
+    ) -> Result<(), GatewayError> {
         let cipher = match credential {
             Some(value) => {
                 let json = serde_json::to_string(value)
@@ -336,10 +352,8 @@ impl Storage {
         };
 
         sqlx::query(
-            "UPDATE accounts SET credential_cipher = $3
-             WHERE channel_id = $1 AND uid = $2",
+            "UPDATE accounts SET credential_cipher = $2 WHERE uid = $1",
         )
-        .bind(channel_id)
         .bind(uid)
         .bind(cipher)
         .execute(&self.pool)
@@ -999,11 +1013,19 @@ struct ChannelRow {
     weight: i32,
     options: serde_json::Value,
     channel_ratio: f64,
+    model_allow: Vec<String>,
 }
 
 #[derive(sqlx::FromRow)]
 struct AccountRow {
-    channel_id: String,
+    /*
+      可空：账号可以先建、后分配分组。
+
+      读出来转成空串（而不是 Option 一路传穿）：
+      空串 key 的账号不会命中任何真实 channel，天然不参与调度，
+      而其余代码继续按 String 处理，改动面最小。
+    */
+    channel_id: Option<String>,
     uid: String,
     nickname: String,
     enabled: bool,

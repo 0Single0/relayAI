@@ -22,7 +22,7 @@
  */
 
 /** CC Switch 支持接入的客户端类型。 */
-export type CcSwitchClientType = "claude" | "gemini";
+export type CcSwitchClientType = "claude" | "codex" | "gemini";
 
 export type CcSwitchImportInput = {
   /** 网关根地址，如 `http://localhost:18788`。 */
@@ -99,6 +99,11 @@ const resolveConfig = (
     case "grok":
       return { app: "grokbuild", endpoint: withV1Endpoint(baseUrl) };
     default:
+      // 没有平台信息时尊重用户在弹窗里显式选的客户端类型：
+      // Codex 与 openai 平台走同一套 endpoint 规则（不带 /v1）。
+      if (clientType === "codex") {
+        return { app: "codex", endpoint: withoutV1Endpoint(baseUrl) };
+      }
       return { app: clientType === "gemini" ? "gemini" : "claude", endpoint: baseUrl };
   }
 };

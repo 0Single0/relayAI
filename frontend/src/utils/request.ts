@@ -84,8 +84,17 @@ export const getRequestErrorMessage = (
     if (payload?.msg) {
       return payload.msg;
     }
-
-    return fallback;
+    if (error.code === "ECONNABORTED" || error.code === "ETIMEDOUT") {
+      return "请求超时，请检查上游服务后重试";
+    }
+    const status = error.response?.status;
+    if (status === 404) return "接口不存在（HTTP 404），请确认后端已更新并重启";
+    if (status === 502 || status === 503) return `服务暂时不可用（HTTP ${status}），请检查后端和网关是否正常运行`;
+    if (status === 504) return "网关请求超时（HTTP 504），请稍后重试";
+    if (status === 401) return "登录已过期，请重新登录";
+    if (status === 403) return "没有权限执行此操作";
+    if (status) return `请求失败（HTTP ${status}），请稍后重试`;
+    return "无法连接服务，请检查网络和后端是否正常运行";
   }
 
   if (error instanceof Error && error.message) {

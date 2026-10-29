@@ -40,28 +40,37 @@ func main() {
 	if baseURL := os.Getenv("GATEWAY_BASE_URL"); baseURL != "" {
 		c.Gateway.BaseURL = baseURL
 	}
+	if publicBaseURL := os.Getenv("GATEWAY_PUBLIC_BASE_URL"); publicBaseURL != "" {
+		c.Gateway.PublicBaseURL = publicBaseURL
+	}
 
 	ctx := context.Background()
 
-	pool, err := database.Open(ctx, c.Database.DataSource, database.Options{
-		MaxConns:        int32(c.Database.MaxConns),
-		MinConns:        int32(c.Database.MinConns),
-		MaxConnLifetime: time.Hour,
-		MaxConnIdleTime: 15 * time.Minute,
-		ConnectTimeout:  10 * time.Second,
+	db, err := database.Connect(ctx, c.Database.DataSource, database.Options{
+		MaxOpenConns: c.Database.MaxConns,
+		MaxIdleConns: c.Database.MinConns,
+		MaxLifetime:  time.Hour,
+		MaxIdleTime:  15 * time.Minute,
 	})
 	if err != nil {
 		logx.Must(fmt.Errorf("数据库初始化失败: %w", err))
 	}
-	defer pool.Close()
+	// 关闭走底层 sql.DB：GORM 本身没有 Close 方法。
+	if sqlDB, closeErr := db.DB(); closeErr == nil {
+		defer func() {
+			if err := sqlDB.Close(); err != nil {
+				logx.Errorf("关闭数据库连接失败: %v", err)
+			}
+		}()
+	}
 
 	if c.Database.AutoMigrate {
-		if err := database.Migrate(ctx, pool); err != nil {
+		if err := database.Migrate(ctx, db); err != nil {
 			logx.Must(fmt.Errorf("数据库迁移失败: %w", err))
 		}
 	}
 
-	svcCtx := svc.NewServiceContext(c, pool)
+	svcCtx := svc.NewServiceContext(c, db)
 
 	// 用标准库 http.Server 而不是 rest.Server：
 	// 本 API 需要 PATCH 与 `{id}` 路径参数，go-zero 的路由器两者都不支持

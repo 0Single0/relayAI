@@ -1,0 +1,16 @@
+.git
+.tmp
+tmp
+artifacts
+data
+**/node_modules
+**/dist
+**/target
+**/bin
+**/.env
+**/.env.*
+**/*.exe
+**/*.log
+**/*.tsbuildinfo
+.vscode
+.idea

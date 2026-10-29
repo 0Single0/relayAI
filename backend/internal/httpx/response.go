@@ -52,6 +52,10 @@ func Fail(w http.ResponseWriter, status int, msg string) {
 //   - gateway.APIError           → 透传网关的状态码（403 不能变成 500）
 //   - 其它                        → 500，且日志里保留原文
 func FailError(w http.ResponseWriter, r *http.Request, err error) {
+	if errors.Is(err, store.ErrInvalidInput) {
+		Fail(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	if errors.Is(err, store.ErrNotFound) {
 		Fail(w, http.StatusNotFound, "记录不存在")
 		return

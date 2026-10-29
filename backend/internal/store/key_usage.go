@@ -34,6 +34,13 @@ type KeyUsage struct {
 //     用户看到的"消费"必须是这个，否则和账单对不上；
 //   - 拒绝行（`is_rejection`）不计入：那是被挡下的请求，没有产生费用；
 //   - 今日按服务器本地时区的自然日切分。
+//
+// 为什么这段仍是手写 SQL：
+// 它用了 Postgres 的 `FILTER (WHERE ...)` 做单遍条件聚合，还要把
+// numeric 转 float8。GORM 的链式 API 表达不了这种"一次扫描算六个数"的语义，
+// 用 `Select("count(*) FILTER ...")` 拼字符串读起来更差、也更容易出错。
+// 用 `Raw` 保留 SQL、交给 GORM 执行与扫描 —— 既统一在 GORM 机制下，
+// 又保住了这段本来就该手写的聚合。
 func (s *Store) ListKeyUsage(ctx context.Context) (map[int64]KeyUsage, error) {
 	const query = `
 		SELECT key_id,
@@ -48,28 +55,34 @@ func (s *Store) ListKeyUsage(ctx context.Context) (map[int64]KeyUsage, error) {
 		WHERE NOT is_rejection AND key_id IS NOT NULL
 		GROUP BY key_id`
 
-	rows, err := s.pool.Query(ctx, query)
-	if err != nil {
+	// 行结构与上面的投影**顺序对应**，字段名用 gorm 的 `column` 标签对齐。
+	type row struct {
+		KeyID         int64      `gorm:"column:key_id"`
+		TodayRequests int64      `gorm:"column:today_requests"`
+		TodayTokens   int64      `gorm:"column:today_tokens"`
+		TodayCost     float64    `gorm:"column:today_cost"`
+		TotalRequests int64      `gorm:"column:total_requests"`
+		TotalTokens   int64      `gorm:"column:total_tokens"`
+		TotalCost     float64    `gorm:"column:total_cost"`
+		LastUsed      *time.Time `gorm:"column:last_used"`
+	}
+
+	var rows []row
+	if err := s.db.WithContext(ctx).Raw(query).Scan(&rows).Error; err != nil {
 		return nil, fmt.Errorf("查询密钥用量失败: %w", err)
 	}
-	defer rows.Close()
 
-	result := make(map[int64]KeyUsage, 32)
-	for rows.Next() {
-		var keyID int64
-		var item KeyUsage
-		var lastUsed *time.Time
-		if err := rows.Scan(
-			&keyID,
-			&item.TodayRequests, &item.TodayTokens, &item.TodayCost,
-			&item.TotalRequests, &item.TotalTokens, &item.TotalCost,
-			&lastUsed,
-		); err != nil {
-			return nil, fmt.Errorf("扫描密钥用量失败: %w", err)
+	result := make(map[int64]KeyUsage, len(rows))
+	for _, item := range rows {
+		result[item.KeyID] = KeyUsage{
+			TodayRequests: item.TodayRequests,
+			TodayTokens:   item.TodayTokens,
+			TodayCost:     item.TodayCost,
+			TotalRequests: item.TotalRequests,
+			TotalTokens:   item.TotalTokens,
+			TotalCost:     item.TotalCost,
+			LastUsed:      item.LastUsed,
 		}
-		item.LastUsed = lastUsed
-		result[keyID] = item
 	}
-
-	return result, rows.Err()
+	return result, nil
 }

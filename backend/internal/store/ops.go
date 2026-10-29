@@ -121,12 +121,27 @@ func (s *Store) GetOpsMetrics(
 		FROM usage_logs
 		WHERE ts >= $1 AND ts <= $2`
 
-	if err := s.pool.QueryRow(ctx, countQuery, from, to).Scan(
-		&out.Requests, &out.Completed, &out.Failed, &out.Rejections, &out.Retried,
-		&out.PromptTokens, &out.CompletionTokens, &out.CachedTokens,
-	); err != nil {
+	var counts struct {
+		Requests         int64 `gorm:"column:requests"`
+		Completed        int64 `gorm:"column:completed"`
+		Failed           int64 `gorm:"column:failed"`
+		Rejections       int64 `gorm:"column:rejections"`
+		Retried          int64 `gorm:"column:retried"`
+		PromptTokens     int64 `gorm:"column:prompt_tokens"`
+		CompletionTokens int64 `gorm:"column:completion_tokens"`
+		CachedTokens     int64 `gorm:"column:cached_tokens"`
+	}
+	if err := s.queryOne(ctx, &counts, countQuery, from, to); err != nil {
 		return nil, fmt.Errorf("查询运维计数失败: %w", err)
 	}
+	out.Requests = counts.Requests
+	out.Completed = counts.Completed
+	out.Failed = counts.Failed
+	out.Rejections = counts.Rejections
+	out.Retried = counts.Retried
+	out.PromptTokens = counts.PromptTokens
+	out.CompletionTokens = counts.CompletionTokens
+	out.CachedTokens = counts.CachedTokens
 
 	// ---- TTFT 分位 ----
 	ttft, err := s.percentileSet(ctx, from, to, "ttft_ms")
@@ -178,15 +193,18 @@ func (s *Store) GetOpsMetrics(
 		FROM speed
 		WHERE value IS NOT NULL`
 
-	var sample int64
-	var p50, p95, p99, avg *float64
-	if err := s.pool.QueryRow(ctx, otpsQuery, from, to).Scan(
-		&sample, &p50, &p95, &p99, &avg,
-	); err != nil {
+	var otps struct {
+		Sample int64    `gorm:"column:sample"`
+		P50    *float64 `gorm:"column:p50"`
+		P95    *float64 `gorm:"column:p95"`
+		P99    *float64 `gorm:"column:p99"`
+		Avg    *float64 `gorm:"column:avg"`
+	}
+	if err := s.queryOne(ctx, &otps, otpsQuery, from, to); err != nil {
 		return nil, fmt.Errorf("查询 OTPS 失败: %w", err)
 	}
-	out.SpeedSample = sample
-	out.Otps = OpsPercentiles{P50: p50, P95: p95, P99: p99, Avg: avg, Sample: sample}
+	out.SpeedSample = otps.Sample
+	out.Otps = OpsPercentiles{P50: otps.P50, P95: otps.P95, P99: otps.P99, Avg: otps.Avg, Sample: otps.Sample}
 
 	// ---- 逐时趋势 ----
 	trend, err := s.opsTrend(ctx, from, to, bucketMinutes)
@@ -222,11 +240,21 @@ func (s *Store) percentileSet(
 		  AND %[1]s > 0`, column)
 
 	var out OpsPercentiles
-	if err := s.pool.QueryRow(ctx, query, from, to).Scan(
-		&out.Sample, &out.P50, &out.P95, &out.P99, &out.Avg,
-	); err != nil {
+	var row struct {
+		Sample int64    `gorm:"column:sample"`
+		P50    *float64 `gorm:"column:p50"`
+		P95    *float64 `gorm:"column:p95"`
+		P99    *float64 `gorm:"column:p99"`
+		Avg    *float64 `gorm:"column:avg"`
+	}
+	if err := s.queryOne(ctx, &row, query, from, to); err != nil {
 		return out, fmt.Errorf("查询 %s 分位失败: %w", column, err)
 	}
+	out.Sample = row.Sample
+	out.P50 = row.P50
+	out.P95 = row.P95
+	out.P99 = row.P99
+	out.Avg = row.Avg
 	return out, nil
 }
 
@@ -278,11 +306,11 @@ func (s *Store) opsTrend(
 		GROUP BY date_bin
 		ORDER BY date_bin`
 
-	rows, err := s.pool.Query(ctx, query, from, to, bucketMinutes)
+	rows, err := s.db.WithContext(ctx).Raw(query, from, to, bucketMinutes).Rows()
 	if err != nil {
 		return nil, fmt.Errorf("查询运维趋势失败: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	list := make([]OpsTrendPoint, 0, 32)
 	for rows.Next() {

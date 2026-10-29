@@ -136,6 +136,8 @@ pub fn snapshot_cn() -> Vec<UpstreamModel> {
             let id = item.get("id")?.as_str()?.to_string();
             Some(UpstreamModel {
                 id,
+                display_name: None,
+                reasoning_effort_map: HashMap::new(),
                 credits: item
                     .get("credits")
                     .and_then(serde_json::Value::as_str)

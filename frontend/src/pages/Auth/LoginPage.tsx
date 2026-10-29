@@ -10,6 +10,7 @@ import {
 import { useLocation, useNavigate } from "react-router-dom";
 import { AuthBackdrop } from "@/pages/Auth/components/AuthBackdrop";
 import { AuthBrand } from "@/pages/Auth/components/AuthBrand";
+import { AuthCollapse } from "@/pages/Auth/components/AuthCollapse";
 import { AuthField } from "@/pages/Auth/components/AuthField";
 import { usePageMeta } from "@/hooks/usePageMeta";
 import { useAuthStore } from "@/store/auth";
@@ -191,8 +192,14 @@ export const LoginPage = () => {
           <section aria-labelledby="auth-brand-title">
             <AuthBrand />
 
-            <form onSubmit={submit} className="mt-14 flex flex-col gap-6" noValidate>
-              {isRegister ? (
+            {/*
+              间距不能靠 `gap-6`：登录 / 注册共用这张表单，昵称、记住密码、
+              密码提示都是"只在一边出现"的块，`gap` 会在高度归零的块两侧
+              留下看不见的空行，卡片就缩不到位。统一由每块自己的 `pt-6`
+              提供纵向间距，块收起时它的间距跟着一起归零。
+            */}
+            <form onSubmit={submit} className="mt-14 flex flex-col" noValidate>
+              <AuthCollapse open={isRegister}>
                 <AuthField
                   label="昵称"
                   optional
@@ -204,39 +211,43 @@ export const LoginPage = () => {
                   maxLength={32}
                   disabled={pending}
                 />
-              ) : null}
+              </AuthCollapse>
 
-              <AuthField
-                label="邮箱"
-                icon={Mail}
-                type="email"
-                value={email}
-                onChange={(event) => handleEmailChange(event.target.value)}
-                placeholder="you@example.com"
-                autoComplete={isRegister ? "email" : "username"}
-                inputMode="email"
-                autoCapitalize="none"
-                spellCheck={false}
-                required
-                disabled={pending}
-                error={fieldErrors.email}
-              />
+              <div className="pt-6">
+                <AuthField
+                  label="邮箱"
+                  icon={Mail}
+                  type="email"
+                  value={email}
+                  onChange={(event) => handleEmailChange(event.target.value)}
+                  placeholder="you@example.com"
+                  autoComplete={isRegister ? "email" : "username"}
+                  inputMode="email"
+                  autoCapitalize="none"
+                  spellCheck={false}
+                  required
+                  disabled={pending}
+                  error={fieldErrors.email}
+                />
+              </div>
 
-              <AuthField
-                label="密码"
-                icon={Lock}
-                type="password"
-                value={password}
-                onChange={(event) => handlePasswordChange(event.target.value)}
-                placeholder={isRegister ? "至少 8 位字符" : "请输入密码"}
-                autoComplete={isRegister ? "new-password" : "current-password"}
-                required
-                disabled={pending}
-                error={fieldErrors.password}
-                hint={isRegister ? "至少 8 位，最多 128 位" : undefined}
-              />
+              <div className="pt-6">
+                <AuthField
+                  label="密码"
+                  icon={Lock}
+                  type="password"
+                  value={password}
+                  onChange={(event) => handlePasswordChange(event.target.value)}
+                  placeholder={isRegister ? "至少 8 位字符" : "请输入密码"}
+                  autoComplete={isRegister ? "new-password" : "current-password"}
+                  required
+                  disabled={pending}
+                  error={fieldErrors.password}
+                  hint={isRegister ? "至少 8 位，最多 128 位" : undefined}
+                />
+              </div>
 
-              {serverError ? (
+              <AuthCollapse open={Boolean(serverError)} innerClassName="pt-6">
                 <div
                   role="alert"
                   className="flex items-start gap-2 rounded-xl border border-destructive/20 bg-destructive/[0.06] px-3.5 py-3 text-[13px] leading-5 text-destructive"
@@ -247,16 +258,22 @@ export const LoginPage = () => {
                   />
                   <span className="min-w-0">{serverError}</span>
                 </div>
-              ) : null}
+              </AuthCollapse>
 
               {/*
                 只在登录模式出现：注册时谈"记住密码"没有意义（密码刚设完），
                 而且会诱导用户把新密码留在共享机器上。
               */}
-              {!isRegister ? (
+              {/*
+                只在登录模式出现：注册时谈"记住密码"没有意义（密码刚设完），
+                而且会诱导用户把新密码留在共享机器上。
+                用 AuthCollapse 而不是条件渲染：两态都留在 DOM 里，
+                切回来时才是"收/展"而不是"凭空冒出"。
+              */}
+              <AuthCollapse open={!isRegister} innerClassName="pt-3">
                 <label
                   htmlFor="remember-password"
-                  className="group -mt-1 flex w-fit items-center gap-2.5 text-[13px] leading-5 text-muted-foreground select-none"
+                  className="group flex w-fit items-center gap-2.5 text-[13px] leading-5 text-muted-foreground select-none"
                 >
                   <input
                     id="remember-password"
@@ -284,14 +301,14 @@ export const LoginPage = () => {
                     记住密码
                   </span>
                 </label>
-              ) : null}
+              </AuthCollapse>
 
               <button
                 type="submit"
                 disabled={pending}
                 aria-busy={pending || undefined}
                 className={cn(
-                  "group mt-1 inline-flex h-12 w-full items-center justify-center gap-2 rounded-xl",
+                  "group mt-5 inline-flex h-12 w-full items-center justify-center gap-2 rounded-xl",
                   "bg-primary text-[15px] font-medium text-primary-foreground",
                   "shadow-[0_14px_28px_-16px_rgb(51_112_255/0.95)] transition-all",
                   "hover:bg-primary/92 hover:shadow-[0_16px_32px_-16px_rgb(51_112_255/0.9)]",

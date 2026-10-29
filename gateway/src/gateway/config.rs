@@ -103,6 +103,8 @@ pub struct ChannelConfig {
     pub options: serde_json::Value,
     /// 渠道级倍率（记账用，网关只透传给用量记录）。
     pub channel_ratio: f64,
+    #[serde(default)]
+    pub model_allow: Vec<String>,
 }
 
 impl Default for ChannelConfig {
@@ -116,6 +118,7 @@ impl Default for ChannelConfig {
             weight: 1,
             options: serde_json::Value::Null,
             channel_ratio: 1.0,
+            model_allow: Vec::new(),
         }
     }
 }

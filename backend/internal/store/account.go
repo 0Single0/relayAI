@@ -3,10 +3,11 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
-	"github.com/jackc/pgx/v5"
+	"relayai/backend/internal/models"
 )
 
 // Account 是账号的管理面视图。
@@ -34,8 +35,7 @@ type Account struct {
 	Protocol string `json:"protocol"`
 	// Platform 是该账号的上游平台：workbuddy / trae / custom / fake。
 	//
-	// **平台在账号上，不在渠道上。** 渠道是计价分组，一个分组下面可以混
-	// 不同平台的号；"我要加一个 WorkBuddy 号"不需要先建 WorkBuddy 渠道。
+	// 分配分组时必须与分组绑定的平台及版本一致。
 	Platform string `json:"platform"`
 	// Options 是适配器私有参数（如 workbuddy 的 realm / outbound_identity）。
 	Options json.RawMessage `json:"options"`
@@ -50,9 +50,9 @@ type Account struct {
 
 // AccountRuntime 是账号的运行态快照。
 type AccountRuntime struct {
-	Status              string   `json:"status"`
-	CooldownUntil       *string  `json:"cooldownUntil"`
-	Inflight            int      `json:"inflight"`
+	Status        string  `json:"status"`
+	CooldownUntil *string `json:"cooldownUntil"`
+	Inflight      int     `json:"inflight"`
 	// MaxInflight 是网关的**生效并发上限**。
 	//
 	// 与 Account.MaxInflight 的区别必须分清：那个是库里的原始值，可为 NULL
@@ -68,6 +68,17 @@ type AccountRuntime struct {
 	StaticCredential bool `json:"staticCredential"`
 	// Quota 是额度快照（来自网关内存，不打上游）。
 	Quota *AccountQuota `json:"quota"`
+	// ModelLimits 是**模型级**限流明细。
+	//
+	// 与 BlockedReasons 分开：后者是"账号整体不可用"，
+	// 这里是"号可用，只是某几个模型在等"。合成一个会让整号显示成冷却中。
+	ModelLimits []ModelLimit `json:"modelLimits"`
+}
+
+// ModelLimit 是一条模型级限流。
+type ModelLimit struct {
+	Model   string `json:"model"`
+	UntilMs int64  `json:"untilMs"`
 }
 
 // AccountQuota 是账号的额度快照。
@@ -108,20 +119,22 @@ func (s *Store) ListAccounts(ctx context.Context, query AccountQuery) ([]Account
 		where += fmt.Sprintf(" AND (a.uid ILIKE $%d OR a.nickname ILIKE $%d)", len(args), len(args))
 	}
 
-	var total int
+	var total int64
 	countQuery := "SELECT count(*) FROM accounts a " + where
-	if err := s.pool.QueryRow(ctx, countQuery, args...).Scan(&total); err != nil {
+	if err := s.queryOne(ctx, &total, countQuery, args...); err != nil {
 		return nil, 0, fmt.Errorf("统计账号失败: %w", err)
 	}
 
 	listArgs := append(args, query.PageSize, (query.Page-1)*query.PageSize)
 	listQuery := fmt.Sprintf(`
-		SELECT a.id, a.channel_id, COALESCE(c.name, a.channel_id), COALESCE(c.adapter, ''),
+		SELECT a.id, COALESCE(a.channel_id, '') AS channel_id,
+		       COALESCE(c.name, a.channel_id, '') AS channel_name,
+		       COALESCE(c.adapter, '') AS adapter,
 		       a.uid, a.nickname, a.enabled,
 		       a.priority_override, a.weight_override, a.max_inflight,
-		       COALESCE(a.model_allow, ARRAY[]::text[]),
+		       COALESCE(a.model_allow, ARRAY[]::text[]) AS model_allow,
 		       a.model_rename, a.source, a.added_at, a.base_url, a.protocol, a.platform, a.options,
-		       a.proxy_id, p.name
+		       a.proxy_id, p.name AS proxy_name
 		FROM accounts a
 		LEFT JOIN channels c ON c.id = a.channel_id
 		LEFT JOIN proxies p ON p.id = a.proxy_id
@@ -129,61 +142,83 @@ func (s *Store) ListAccounts(ctx context.Context, query AccountQuery) ([]Account
 		ORDER BY a.channel_id, a.added_at
 		LIMIT $%d OFFSET $%d`, where, len(listArgs)-1, len(listArgs))
 
-	rows, err := s.pool.Query(ctx, listQuery, listArgs...)
-	if err != nil {
+	var rows []accountRow
+	if err := s.queryAll(ctx, &rows, listQuery, listArgs...); err != nil {
 		return nil, 0, fmt.Errorf("查询账号失败: %w", err)
 	}
-	defer rows.Close()
 
-	list := make([]Account, 0, query.PageSize)
-	for rows.Next() {
-		var account Account
-		var addedAt interface{}
-		if err := rows.Scan(
-			&account.ID, &account.ChannelID, &account.ChannelName, &account.Adapter,
-			&account.UID, &account.Nickname, &account.Enabled,
-			&account.PriorityOverride, &account.WeightOverride, &account.MaxInflight,
-			&account.ModelAllow, &account.ModelRename, &account.Source, &addedAt,
-			&account.BaseURL, &account.Protocol, &account.Platform, &account.Options,
-			&account.ProxyID, &account.ProxyName,
-		); err != nil {
-			return nil, 0, fmt.Errorf("扫描账号失败: %w", err)
+	list := make([]Account, 0, len(rows))
+	for _, row := range rows {
+		account := Account{
+			ID:               row.ID,
+			ChannelID:        row.ChannelID,
+			ChannelName:      row.ChannelName,
+			Adapter:          row.Adapter,
+			UID:              row.UID,
+			Nickname:         row.Nickname,
+			Enabled:          row.Enabled,
+			PriorityOverride: row.PriorityOverride,
+			WeightOverride:   row.WeightOverride,
+			MaxInflight:      row.MaxInflight,
+			ModelAllow:       orEmptyText(row.ModelAllow),
+			Source:           row.Source,
+			AddedAt:          formatTimePtr(row.AddedAt),
+			BaseURL:          row.BaseURL,
+			Protocol:         row.Protocol,
+			Platform:         row.Platform,
+			ProxyID:          row.ProxyID,
+			ProxyName:        row.ProxyName,
 		}
-		account.AddedAt = formatTime(addedAt)
+		account.ModelRename = rawJSONOrEmpty(row.ModelRename)
+		account.Options = rawJSONOrEmpty(row.Options)
 		list = append(list, account)
 	}
 
-	return list, total, rows.Err()
+	return list, int(total), nil
 }
 
 // GetAccount 按 id 取账号。
 func (s *Store) GetAccount(ctx context.Context, id int64) (*Account, error) {
 	const query = `
-		SELECT a.id, a.channel_id, COALESCE(c.name, a.channel_id), COALESCE(c.adapter, ''),
+		SELECT a.id, COALESCE(a.channel_id, '') AS channel_id,
+		       COALESCE(c.name, a.channel_id, '') AS channel_name,
+		       COALESCE(c.adapter, '') AS adapter,
 		       a.uid, a.nickname, a.enabled,
 		       a.priority_override, a.weight_override, a.max_inflight,
-		       COALESCE(a.model_allow, ARRAY[]::text[]),
+		       COALESCE(a.model_allow, ARRAY[]::text[]) AS model_allow,
 		       a.model_rename, a.source, a.added_at, a.base_url, a.protocol, a.platform, a.options
 		FROM accounts a
 		LEFT JOIN channels c ON c.id = a.channel_id
 		WHERE a.id = $1`
 
-	var account Account
-	var addedAt interface{}
-	err := s.pool.QueryRow(ctx, query, id).Scan(
-		&account.ID, &account.ChannelID, &account.ChannelName, &account.Adapter,
-		&account.UID, &account.Nickname, &account.Enabled,
-		&account.PriorityOverride, &account.WeightOverride, &account.MaxInflight,
-		&account.ModelAllow, &account.ModelRename, &account.Source, &addedAt,
-		&account.BaseURL, &account.Protocol, &account.Platform, &account.Options,
-	)
-	if err == pgx.ErrNoRows {
-		return nil, ErrNotFound
-	}
-	if err != nil {
+	var row accountRow
+	if err := s.queryOne(ctx, &row, query, id); err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return nil, ErrNotFound
+		}
 		return nil, fmt.Errorf("查询账号失败: %w", err)
 	}
-	account.AddedAt = formatTime(addedAt)
+
+	account := Account{
+		ID:               row.ID,
+		ChannelID:        row.ChannelID,
+		ChannelName:      row.ChannelName,
+		Adapter:          row.Adapter,
+		UID:              row.UID,
+		Nickname:         row.Nickname,
+		Enabled:          row.Enabled,
+		PriorityOverride: row.PriorityOverride,
+		WeightOverride:   row.WeightOverride,
+		MaxInflight:      row.MaxInflight,
+		ModelAllow:       orEmptyText(row.ModelAllow),
+		Source:           row.Source,
+		AddedAt:          formatTimePtr(row.AddedAt),
+		BaseURL:          row.BaseURL,
+		Protocol:         row.Protocol,
+		Platform:         row.Platform,
+	}
+	account.ModelRename = rawJSONOrEmpty(row.ModelRename)
+	account.Options = rawJSONOrEmpty(row.Options)
 
 	return &account, nil
 }
@@ -197,9 +232,26 @@ type AccountInput struct {
 	MaxInflight      *int            `json:"maxInflight"`
 	ModelAllow       *[]string       `json:"modelAllow"`
 	ModelRename      json.RawMessage `json:"modelRename"`
+	Options          json.RawMessage `json:"options"`
+	APIKey           *string         `json:"apiKey"`
+	CredentialCipher []byte          `json:"-"`
+	// Presence distinguishes omitted overrides from an explicit reset to NULL.
+	MaxInflightSet      bool `json:"-"`
+	PriorityOverrideSet bool `json:"-"`
+	WeightOverrideSet   bool `json:"-"`
 	// BaseURL / Protocol 是上游地址与协议（账号级）。
 	BaseURL  *string `json:"baseUrl"`
 	Protocol *string `json:"protocol"`
+	/*
+		ChannelID 允许把账号**迁移到另一个分组**。
+
+		为什么需要：分组是计价桶，把号放错桶是很常见的操作失误。
+		以前只能删号重建 —— 而重建会换掉 `id`、丢掉历史用量归属。
+
+		约束：目标分组必须存在。迁移**不改 uid、不改凭据**，
+		所以 `usage_logs.account_uid` 仍然对得上这个号。
+	*/
+	ChannelID *string `json:"channelId"`
 }
 
 // UpdateAccount 更新账号。
@@ -219,18 +271,30 @@ func (s *Store) UpdateAccount(ctx context.Context, id int64, input AccountInput)
 	}
 	if input.PriorityOverride != nil {
 		sets = append(sets, "priority_override = "+arg(*input.PriorityOverride))
+	} else if input.PriorityOverrideSet {
+		sets = append(sets, "priority_override = NULL")
 	}
 	if input.WeightOverride != nil {
 		sets = append(sets, "weight_override = "+arg(*input.WeightOverride))
+	} else if input.WeightOverrideSet {
+		sets = append(sets, "weight_override = NULL")
 	}
 	if input.MaxInflight != nil {
 		sets = append(sets, "max_inflight = "+arg(*input.MaxInflight))
+	} else if input.MaxInflightSet {
+		sets = append(sets, "max_inflight = NULL")
 	}
 	if input.ModelAllow != nil {
-		sets = append(sets, "model_allow = "+arg(*input.ModelAllow))
+		sets = append(sets, "model_allow = "+arg(models.TextArray(*input.ModelAllow)))
 	}
 	if len(input.ModelRename) > 0 {
 		sets = append(sets, "model_rename = "+arg(input.ModelRename))
+	}
+	if len(input.Options) > 0 {
+		sets = append(sets, "options = "+arg(input.Options))
+	}
+	if input.CredentialCipher != nil {
+		sets = append(sets, "credential_cipher = "+arg(input.CredentialCipher))
 	}
 	if input.BaseURL != nil {
 		sets = append(sets, "base_url = "+arg(strings.TrimSpace(*input.BaseURL)))
@@ -238,17 +302,49 @@ func (s *Store) UpdateAccount(ctx context.Context, id int64, input AccountInput)
 	if input.Protocol != nil {
 		sets = append(sets, "protocol = "+arg(strings.TrimSpace(*input.Protocol)))
 	}
+	/*
+		迁移到另一个分组。
+
+		先校验目标分组存在且启用：直接 UPDATE 到不存在的 channel_id
+		会撞外键（或者更糟，在没外键时留下一个悬空引用，
+		路由层按 channel 找账号时永远找不到它）。
+	*/
+	if input.ChannelID != nil {
+		target := strings.TrimSpace(*input.ChannelID)
+		/*
+			空串 = **解除分配**（回到"待分配"），不是错误。
+
+			这条路径要能用：号停用了、或者要从某个计价桶里摘出来。
+			以前只能删号重建 —— 那会丢掉历史用量归属。
+		*/
+		if target == "" {
+			sets = append(sets, "channel_id = NULL")
+		} else {
+			account, err := s.GetAccount(ctx, id)
+			if err != nil {
+				return nil, err
+			}
+			platform := account.Platform
+			if platform == "" {
+				platform = account.Adapter
+			}
+			if err := s.ValidateAccountChannel(ctx, target, platform, account.Options); err != nil {
+				return nil, err
+			}
+			sets = append(sets, "channel_id = "+arg(target))
+		}
+	}
 
 	if len(sets) == 0 {
 		return s.GetAccount(ctx, id)
 	}
 
 	query := "UPDATE accounts SET " + joinSets(sets) + " WHERE id = " + arg(id)
-	result, err := s.pool.Exec(ctx, query, args...)
+	affected, err := s.exec(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("更新账号失败: %w", err)
 	}
-	if result.RowsAffected() == 0 {
+	if affected == 0 {
 		return nil, ErrNotFound
 	}
 
@@ -257,28 +353,42 @@ func (s *Store) UpdateAccount(ctx context.Context, id int64, input AccountInput)
 
 // DeleteAccount 删除账号。
 func (s *Store) DeleteAccount(ctx context.Context, id int64) error {
-	result, err := s.pool.Exec(ctx, "DELETE FROM accounts WHERE id = $1", id)
+	affected, err := s.exec(ctx, "DELETE FROM accounts WHERE id = $1", id)
 	if err != nil {
 		return fmt.Errorf("删除账号失败: %w", err)
 	}
-	if result.RowsAffected() == 0 {
+	if affected == 0 {
 		return ErrNotFound
 	}
 	return nil
 }
 
 // CreateAccount 手工新增账号（自定义渠道填凭据）。
+//
+// `channelID` 传空串表示**先建号、暂不分配分组**。
 func (s *Store) CreateAccount(ctx context.Context, channelID, uid, nickname, cipher string) (*Account, error) {
+	/*
+		冲突目标改成 `uid` 单列。
+
+		为什么不是 (channel_id, uid)：channel_id 现在可空，
+		而 Postgres 里 `NULL <> NULL`，复合唯一索引对空分组行不起作用 ——
+		同一个 uid 可以插无数次。
+
+		改为 uid 单列唯一也更符合语义：一个上游账号在库里只该有一条记录，
+		换分组是 UPDATE 而不是新插一行。
+	*/
 	const query = `
 		INSERT INTO accounts (channel_id, uid, nickname, enabled, credential_cipher, source)
-		VALUES ($1, $2, $3, true, $4, 'manual')
-		ON CONFLICT (channel_id, uid) DO UPDATE SET
+		VALUES (NULLIF($1, ''), $2, $3, true, $4, 'manual')
+		ON CONFLICT (uid) DO UPDATE SET
 		    nickname = EXCLUDED.nickname,
-		    credential_cipher = EXCLUDED.credential_cipher
+		    credential_cipher = EXCLUDED.credential_cipher,
+		    -- 传了分组才改分组：空表示"保持原样"，不把已有的归组清掉。
+		    channel_id = COALESCE(EXCLUDED.channel_id, accounts.channel_id)
 		RETURNING id`
 
 	var id int64
-	if err := s.pool.QueryRow(ctx, query, channelID, uid, nickname, []byte(cipher)).Scan(&id); err != nil {
+	if err := s.queryOne(ctx, &id, query, channelID, uid, nickname, []byte(cipher)); err != nil {
 		return nil, fmt.Errorf("新增账号失败: %w", err)
 	}
 
@@ -287,32 +397,52 @@ func (s *Store) CreateAccount(ctx context.Context, channelID, uid, nickname, cip
 
 // FindAccountByUID 按渠道与 uid 找账号（登录完成 / 手填凭据建号后回查）。
 func (s *Store) FindAccountByUID(ctx context.Context, channelID, uid string) (*Account, error) {
+	/*
+		uid 是唯一键（`accounts_uid_key`），channel_id 可空。
+
+		按 uid 查而不是 (channel_id, uid)：channelID 传空串表示
+		"刚建的号还没分配分组" —— 那行的 channel_id 是 NULL，
+		`channel_id = ''` 永远匹配不到它，会误报"记录不存在"。
+	*/
 	const query = `
-		SELECT a.id, a.channel_id, COALESCE(c.name, a.channel_id), COALESCE(c.adapter, ''),
+		SELECT a.id, COALESCE(a.channel_id, '') AS channel_id,
+		       COALESCE(c.name, a.channel_id, '') AS channel_name, COALESCE(c.adapter, '') AS adapter,
 		       a.uid, a.nickname, a.enabled,
 		       a.priority_override, a.weight_override, a.max_inflight,
 		       COALESCE(a.model_allow, ARRAY[]::text[]),
 		       a.model_rename, a.source, a.added_at, a.base_url, a.protocol, a.platform, a.options
 		FROM accounts a
 		LEFT JOIN channels c ON c.id = a.channel_id
-		WHERE a.channel_id = $1 AND a.uid = $2`
+		WHERE a.uid = $1`
 
-	var account Account
-	var addedAt any
-	err := s.pool.QueryRow(ctx, query, channelID, uid).Scan(
-		&account.ID, &account.ChannelID, &account.ChannelName, &account.Adapter,
-		&account.UID, &account.Nickname, &account.Enabled,
-		&account.PriorityOverride, &account.WeightOverride, &account.MaxInflight,
-		&account.ModelAllow, &account.ModelRename, &account.Source, &addedAt,
-		&account.BaseURL, &account.Protocol, &account.Platform, &account.Options,
-	)
-	if err == pgx.ErrNoRows {
-		return nil, ErrNotFound
-	}
-	if err != nil {
+	var row accountRow
+	if err := s.queryOne(ctx, &row, query, uid); err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return nil, ErrNotFound
+		}
 		return nil, fmt.Errorf("查询账号失败: %w", err)
 	}
-	account.AddedAt = formatTime(addedAt)
+
+	account := Account{
+		ID:               row.ID,
+		ChannelID:        row.ChannelID,
+		ChannelName:      row.ChannelName,
+		Adapter:          row.Adapter,
+		UID:              row.UID,
+		Nickname:         row.Nickname,
+		Enabled:          row.Enabled,
+		PriorityOverride: row.PriorityOverride,
+		WeightOverride:   row.WeightOverride,
+		MaxInflight:      row.MaxInflight,
+		ModelAllow:       orEmptyText(row.ModelAllow),
+		Source:           row.Source,
+		AddedAt:          formatTimePtr(row.AddedAt),
+		BaseURL:          row.BaseURL,
+		Protocol:         row.Protocol,
+		Platform:         row.Platform,
+	}
+	account.ModelRename = rawJSONOrEmpty(row.ModelRename)
+	account.Options = rawJSONOrEmpty(row.Options)
 
 	return &account, nil
 }

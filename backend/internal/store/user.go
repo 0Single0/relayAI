@@ -14,8 +14,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jackc/pgx/v5"
+	"database/sql"
+
 	"github.com/jackc/pgx/v5/pgconn"
+	"gorm.io/gorm"
 )
 
 // ---------------------------------------------------------------------------
@@ -182,7 +184,7 @@ func (s *Store) RegisterUser(ctx context.Context, input RegisterInput) (*User, e
 	// 第一个注册的人是 admin（开箱即用，不用手工改库）。
 	role := "user"
 	var count int
-	if err := s.pool.QueryRow(ctx, "SELECT count(*) FROM users").Scan(&count); err == nil && count == 0 {
+	if err := s.db.WithContext(ctx).Raw("SELECT count(*) FROM users").Row().Scan(&count); err == nil && count == 0 {
 		role = "admin"
 	}
 
@@ -195,7 +197,7 @@ func (s *Store) RegisterUser(ctx context.Context, input RegisterInput) (*User, e
 	var user User
 	var createdAt any
 	var lastLogin any
-	err = s.pool.QueryRow(ctx, query, email, hash, nickname, role).Scan(
+	err = s.db.WithContext(ctx).Raw(query, email, hash, nickname, role).Row().Scan(
 		&user.ID, &user.Email, &user.Nickname, &user.Balance, &user.TotalRecharged,
 		&user.Role, &user.Enabled, &user.Source, &createdAt, &lastLogin,
 	)
@@ -223,11 +225,11 @@ func (s *Store) VerifyLogin(ctx context.Context, email, password string) (*User,
 	var hash string
 	var createdAt any
 	var lastLogin any
-	err := s.pool.QueryRow(ctx, query, NormalizeEmail(email)).Scan(
+	err := s.db.WithContext(ctx).Raw(query, NormalizeEmail(email)).Row().Scan(
 		&user.ID, &user.Email, &user.Nickname, &hash, &user.Balance, &user.TotalRecharged,
 		&user.Role, &user.Enabled, &user.Source, &createdAt, &lastLogin,
 	)
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrBadCredentials
 	}
 	if err != nil {
@@ -246,7 +248,7 @@ func (s *Store) VerifyLogin(ctx context.Context, email, password string) (*User,
 	user.LastLoginAt = nullableTime(lastLogin)
 
 	// 记录最后登录时间。失败不影响登录本身。
-	_, _ = s.pool.Exec(ctx, "UPDATE users SET last_login_at = now() WHERE id = $1", user.ID)
+	_, _ = s.exec(ctx, "UPDATE users SET last_login_at = now() WHERE id = $1", user.ID)
 
 	return &user, nil
 }
@@ -261,11 +263,11 @@ func (s *Store) GetUser(ctx context.Context, id int64) (*User, error) {
 	var user User
 	var createdAt any
 	var lastLogin any
-	err := s.pool.QueryRow(ctx, query, id).Scan(
+	err := s.db.WithContext(ctx).Raw(query, id).Row().Scan(
 		&user.ID, &user.Email, &user.Nickname, &user.Balance, &user.TotalRecharged,
 		&user.Role, &user.Enabled, &user.Source, &createdAt, &lastLogin,
 	)
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
 	if err != nil {
@@ -287,7 +289,7 @@ func (s *Store) ListUsers(ctx context.Context, page, pageSize int) ([]User, int,
 	}
 
 	var total int
-	if err := s.pool.QueryRow(ctx, "SELECT count(*) FROM users").Scan(&total); err != nil {
+	if err := s.db.WithContext(ctx).Raw("SELECT count(*) FROM users").Row().Scan(&total); err != nil {
 		return nil, 0, fmt.Errorf("统计用户失败: %w", err)
 	}
 
@@ -296,7 +298,7 @@ func (s *Store) ListUsers(ctx context.Context, page, pageSize int) ([]User, int,
 		       role, enabled, source, created_at, last_login_at
 		FROM users ORDER BY created_at DESC LIMIT $1 OFFSET $2`
 
-	rows, err := s.pool.Query(ctx, query, pageSize, (page-1)*pageSize)
+	rows, err := s.db.WithContext(ctx).Raw(query, pageSize, (page-1)*pageSize).Rows()
 	if err != nil {
 		return nil, 0, fmt.Errorf("查询用户失败: %w", err)
 	}
@@ -388,7 +390,7 @@ func (s *Store) CreateRedeemCodes(
 		var usedBy *int64
 		var usedAt any
 		var createdAt any
-		if err := s.pool.QueryRow(ctx, query, code, amount, note, expiresAt).Scan(
+		if err := s.db.WithContext(ctx).Raw(query, code, amount, note, expiresAt).Row().Scan(
 			&item.ID, &item.Code, &item.Amount, &item.Note,
 			&expires, &usedBy, &usedAt, &createdAt,
 		); err != nil {
@@ -415,7 +417,7 @@ func (s *Store) ListRedeemCodes(ctx context.Context, page, pageSize int) ([]Rede
 	}
 
 	var total int
-	if err := s.pool.QueryRow(ctx, "SELECT count(*) FROM redeem_codes").Scan(&total); err != nil {
+	if err := s.db.WithContext(ctx).Raw("SELECT count(*) FROM redeem_codes").Row().Scan(&total); err != nil {
 		return nil, 0, fmt.Errorf("统计兑换码失败: %w", err)
 	}
 
@@ -423,7 +425,7 @@ func (s *Store) ListRedeemCodes(ctx context.Context, page, pageSize int) ([]Rede
 		SELECT id, code, amount::float8, note, expires_at, used_by, used_at, created_at
 		FROM redeem_codes ORDER BY created_at DESC LIMIT $1 OFFSET $2`
 
-	rows, err := s.pool.Query(ctx, query, pageSize, (page-1)*pageSize)
+	rows, err := s.db.WithContext(ctx).Raw(query, pageSize, (page-1)*pageSize).Rows()
 	if err != nil {
 		return nil, 0, fmt.Errorf("查询兑换码失败: %w", err)
 	}
@@ -465,50 +467,60 @@ func (s *Store) ListRedeemCodes(ctx context.Context, page, pageSize int) ([]Rede
 func (s *Store) RedeemForUser(ctx context.Context, userID int64, code string) (*User, float64, error) {
 	normalized := strings.ToUpper(strings.TrimSpace(code))
 
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return nil, 0, fmt.Errorf("开启事务失败: %w", err)
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
 
 	var codeID int64
 	var amount float64
-	err = tx.QueryRow(ctx,
-		`UPDATE redeem_codes SET used_by = $2, used_at = now()
-		  WHERE code = $1 AND used_at IS NULL
-		    AND (expires_at IS NULL OR expires_at > now())
-		 RETURNING id, amount::float8`,
-		normalized, userID,
-	).Scan(&codeID, &amount)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, 0, ErrCodeInvalid
-	}
-	if err != nil {
-		return nil, 0, fmt.Errorf("核销兑换码失败: %w", err)
-	}
-
 	var balance float64
-	if err := tx.QueryRow(ctx,
-		`UPDATE users
-		    SET balance = balance + $2,
-		        total_recharged = total_recharged + $2
-		  WHERE id = $1
-		 RETURNING balance::float8`,
-		userID, amount,
-	).Scan(&balance); err != nil {
-		return nil, 0, fmt.Errorf("充值失败: %w", err)
-	}
 
-	if _, err := tx.Exec(ctx,
-		`INSERT INTO balance_transactions (user_id, amount, balance_after, kind, ref_id, note)
-		 VALUES ($1, $2, $3, 'redeem', $4, $5)`,
-		userID, amount, balance, codeID, "兑换码充值",
-	); err != nil {
-		return nil, 0, fmt.Errorf("记录流水失败: %w", err)
-	}
+	// 整段放进一个事务：核销、加余额、写流水必须同生共死。
+	// 只核销不加钱（或反过来）会让账目永久对不上。
+	txErr := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		//
+		// 原子占位：只有把 used_at 从 NULL 改成时间的那个事务拿到行。
+		// 并发重复兑换时另一个事务得到 0 行，直接判"已被使用"。
+		redeem := tx.Raw(
+			`UPDATE redeem_codes SET used_by = ?, used_at = now()
+			  WHERE code = ? AND used_at IS NULL
+			    AND (expires_at IS NULL OR expires_at > now())
+			 RETURNING id, amount::float8`,
+			userID, normalized,
+		)
+		var redeemed struct {
+			ID     int64   `gorm:"column:id"`
+			Amount float64 `gorm:"column:amount"`
+		}
+		if err := redeem.Row().Scan(&redeemed.ID, &redeemed.Amount); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return ErrCodeInvalid
+			}
+			return fmt.Errorf("核销兑换码失败: %w", err)
+		}
+		codeID = redeemed.ID
+		amount = redeemed.Amount
 
-	if err := tx.Commit(ctx); err != nil {
-		return nil, 0, fmt.Errorf("提交事务失败: %w", err)
+		credit := tx.Raw(
+			`UPDATE users
+			    SET balance = balance + ?,
+			        total_recharged = total_recharged + ?
+			  WHERE id = ?
+			 RETURNING balance::float8`,
+			amount, amount, userID,
+		)
+		if err := credit.Row().Scan(&balance); err != nil {
+			return fmt.Errorf("充值失败: %w", err)
+		}
+
+		return tx.Exec(
+			`INSERT INTO balance_transactions (user_id, amount, balance_after, kind, ref_id, note)
+			 VALUES (?, ?, ?, 'redeem', ?, ?)`,
+			userID, amount, balance, codeID, "兑换码充值",
+		).Error
+	})
+	if txErr != nil {
+		if errors.Is(txErr, ErrCodeInvalid) {
+			return nil, 0, ErrCodeInvalid
+		}
+		return nil, 0, txErr
 	}
 
 	user, err := s.GetUser(ctx, userID)
@@ -550,9 +562,8 @@ func (s *Store) ListBalanceTransactions(ctx context.Context, userID int64, page,
 	const where = "user_id = $1 AND amount > 0 AND kind <> 'usage'"
 
 	var total int
-	if err := s.pool.QueryRow(ctx,
-		"SELECT count(*) FROM balance_transactions WHERE "+where, userID,
-	).Scan(&total); err != nil {
+	if err := s.db.WithContext(ctx).Raw("SELECT count(*) FROM balance_transactions WHERE "+where, userID,
+	).Row().Scan(&total); err != nil {
 		return nil, 0, fmt.Errorf("统计流水失败: %w", err)
 	}
 
@@ -561,7 +572,7 @@ func (s *Store) ListBalanceTransactions(ctx context.Context, userID int64, page,
 		FROM balance_transactions WHERE ` + where + `
 		ORDER BY created_at DESC LIMIT $2 OFFSET $3`
 
-	rows, err := s.pool.Query(ctx, query, userID, pageSize, (page-1)*pageSize)
+	rows, err := s.db.WithContext(ctx).Raw(query, userID, pageSize, (page-1)*pageSize).Rows()
 	if err != nil {
 		return nil, 0, fmt.Errorf("查询流水失败: %w", err)
 	}
@@ -605,7 +616,7 @@ func (s *Store) CreateSession(ctx context.Context, userID int64) (string, error)
 	digest := sha256.Sum256([]byte(token))
 	hash := hex.EncodeToString(digest[:])
 
-	_, err := s.pool.Exec(ctx,
+	_, err := s.exec(ctx,
 		`INSERT INTO user_sessions (user_id, token_hash, expires_at)
 		 VALUES ($1, $2, now() + make_interval(secs => $3))`,
 		userID, hash, int(SessionTokenTTL.Seconds()),
@@ -636,11 +647,11 @@ func (s *Store) UserByToken(ctx context.Context, token string) (*User, error) {
 	var user User
 	var createdAt any
 	var lastLogin any
-	err := s.pool.QueryRow(ctx, query, hash).Scan(
+	err := s.db.WithContext(ctx).Raw(query, hash).Row().Scan(
 		&user.ID, &user.Email, &user.Nickname, &user.Balance, &user.TotalRecharged,
 		&user.Role, &user.Enabled, &user.Source, &createdAt, &lastLogin,
 	)
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
 	if err != nil {
@@ -656,7 +667,7 @@ func (s *Store) UserByToken(ctx context.Context, token string) (*User, error) {
 func (s *Store) DeleteSession(ctx context.Context, token string) error {
 	digest := sha256.Sum256([]byte(token))
 	hash := hex.EncodeToString(digest[:])
-	_, err := s.pool.Exec(ctx, "DELETE FROM user_sessions WHERE token_hash = $1", hash)
+	_, err := s.exec(ctx, "DELETE FROM user_sessions WHERE token_hash = $1", hash)
 	return err
 }
 
@@ -698,11 +709,11 @@ func (s *Store) UpdateUserByAdmin(ctx context.Context, id int64, input AdminUpda
 	}
 
 	query := "UPDATE users SET " + strings.Join(sets, ", ") + " WHERE id = " + arg(id)
-	result, err := s.pool.Exec(ctx, query, args...)
+	affected, err := s.exec(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("更新用户失败: %w", err)
 	}
-	if result.RowsAffected() == 0 {
+	if affected == 0 {
 		return nil, ErrNotFound
 	}
 
@@ -723,29 +734,22 @@ func (s *Store) ResetPassword(ctx context.Context, id int64, password string) er
 		return err
 	}
 
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return fmt.Errorf("开启事务失败: %w", err)
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
+	// 改密码 + 吊销会话必须同时成功：
+	// 只改密码不吊销，旧令牌还能继续用（改密码就失去了"踢下线"的意义）。
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		update := tx.Exec("UPDATE users SET password_hash = $2 WHERE id = $1", id, hash)
+		if update.Error != nil {
+			return fmt.Errorf("重置密码失败: %w", update.Error)
+		}
+		if update.RowsAffected == 0 {
+			return ErrNotFound
+		}
 
-	result, err := tx.Exec(ctx, "UPDATE users SET password_hash = $2 WHERE id = $1", id, hash)
-	if err != nil {
-		return fmt.Errorf("重置密码失败: %w", err)
-	}
-	if result.RowsAffected() == 0 {
-		return ErrNotFound
-	}
-
-	if _, err := tx.Exec(ctx, "DELETE FROM user_sessions WHERE user_id = $1", id); err != nil {
-		return fmt.Errorf("吊销会话失败: %w", err)
-	}
-
-	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("提交事务失败: %w", err)
-	}
-
-	return nil
+		if err := tx.Exec("DELETE FROM user_sessions WHERE user_id = $1", id).Error; err != nil {
+			return fmt.Errorf("吊销会话失败: %w", err)
+		}
+		return nil
+	})
 }
 
 // AdminCreateUserInput 是管理员创建用户的输入。
@@ -792,12 +796,6 @@ func (s *Store) CreateUserByAdmin(ctx context.Context, input AdminCreateUserInpu
 		}
 	}
 
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("开启事务失败: %w", err)
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-
 	const query = `
 		INSERT INTO users (email, password_hash, nickname, role, balance, total_recharged, source)
 		VALUES ($1, $2, $3, $4, $5, $5, 'manual')
@@ -807,32 +805,37 @@ func (s *Store) CreateUserByAdmin(ctx context.Context, input AdminCreateUserInpu
 	var user User
 	var createdAt any
 	var lastLogin any
-	err = tx.QueryRow(ctx, query, email, hash, nickname, role, input.Balance).Scan(
-		&user.ID, &user.Email, &user.Nickname, &user.Balance, &user.TotalRecharged,
-		&user.Role, &user.Enabled, &user.Source, &createdAt, &lastLogin,
-	)
-	if err != nil {
-		var pgErr *pgconn.PgError
-		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+
+	// 建用户 + 记初始余额流水在一个事务里：
+	// 只建用户不记流水会出现"余额 100 但查不到这钱哪来的"。
+	txErr := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Raw(query, email, hash, nickname, role, input.Balance).Row().Scan(
+			&user.ID, &user.Email, &user.Nickname, &user.Balance, &user.TotalRecharged,
+			&user.Role, &user.Enabled, &user.Source, &createdAt, &lastLogin,
+		); err != nil {
+			var pgErr *pgconn.PgError
+			if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+				return ErrEmailTaken
+			}
+			return fmt.Errorf("创建用户失败: %w", err)
+		}
+
+		if input.Balance > 0 {
+			if err := tx.Exec(
+				`INSERT INTO balance_transactions (user_id, amount, balance_after, kind, note)
+				 VALUES ($1, $2, $2, 'adjust', '管理员开户初始余额')`,
+				user.ID, input.Balance,
+			).Error; err != nil {
+				return fmt.Errorf("记录初始余额失败: %w", err)
+			}
+		}
+		return nil
+	})
+	if txErr != nil {
+		if errors.Is(txErr, ErrEmailTaken) {
 			return nil, ErrEmailTaken
 		}
-		return nil, fmt.Errorf("创建用户失败: %w", err)
-	}
-
-	// 初始余额也要记一笔流水：否则"余额 100 但没有任何入账记录"，
-	// 用户来问"这钱哪来的"时查不出来。
-	if input.Balance > 0 {
-		if _, err := tx.Exec(ctx,
-			`INSERT INTO balance_transactions (user_id, amount, balance_after, kind, note)
-			 VALUES ($1, $2, $2, 'adjust', '管理员开户初始余额')`,
-			user.ID, input.Balance,
-		); err != nil {
-			return nil, fmt.Errorf("记录初始余额失败: %w", err)
-		}
-	}
-
-	if err := tx.Commit(ctx); err != nil {
-		return nil, fmt.Errorf("提交事务失败: %w", err)
+		return nil, txErr
 	}
 
 	user.CreatedAt = formatTime(createdAt)
@@ -849,45 +852,42 @@ func (s *Store) AdjustBalance(ctx context.Context, userID int64, delta float64, 
 		return nil, fmt.Errorf("调整金额不能为 0")
 	}
 
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("开启事务失败: %w", err)
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-
 	// 条件更新保证原子性：`balance + delta >= 0` 在 SQL 里判断，
 	// 而不是先查再改 —— 先查再改在并发下会漏判。
 	var balance float64
-	err = tx.QueryRow(ctx,
-		`UPDATE users
-		    SET balance = balance + $2,
-		        total_recharged = total_recharged + GREATEST($2, 0)
-		  WHERE id = $1 AND balance + $2 >= 0
-		 RETURNING balance::float8`,
-		userID, delta,
-	).Scan(&balance)
-	if errors.Is(err, pgx.ErrNoRows) {
-		// 两种可能：用户不存在，或扣到负数。分别报清楚。
-		var exists bool
-		if scanErr := tx.QueryRow(ctx, "SELECT true FROM users WHERE id = $1", userID).Scan(&exists); scanErr != nil {
-			return nil, ErrNotFound
+
+	txErr := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Raw(
+			`UPDATE users
+			    SET balance = balance + $2,
+			        total_recharged = total_recharged + GREATEST($2, 0)
+			  WHERE id = $1 AND balance + $2 >= 0
+			 RETURNING balance::float8`,
+			userID, delta,
+		).Row().Scan(&balance); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				// 两种可能：用户不存在，或扣到负数。分别报清楚。
+				var exists bool
+				probe := tx.Raw("SELECT true FROM users WHERE id = $1", userID).Row().Scan(&exists)
+				if probe != nil {
+					return ErrNotFound
+				}
+				return ErrInsufficientBalance
+			}
+			return fmt.Errorf("调整余额失败: %w", err)
 		}
-		return nil, ErrInsufficientBalance
-	}
-	if err != nil {
-		return nil, fmt.Errorf("调整余额失败: %w", err)
-	}
 
-	if _, err := tx.Exec(ctx,
-		`INSERT INTO balance_transactions (user_id, amount, balance_after, kind, note)
-		 VALUES ($1, $2, $3, 'adjust', $4)`,
-		userID, delta, balance, note,
-	); err != nil {
-		return nil, fmt.Errorf("记录流水失败: %w", err)
-	}
-
-	if err := tx.Commit(ctx); err != nil {
-		return nil, fmt.Errorf("提交事务失败: %w", err)
+		return tx.Exec(
+			`INSERT INTO balance_transactions (user_id, amount, balance_after, kind, note)
+			 VALUES ($1, $2, $3, 'adjust', $4)`,
+			userID, delta, balance, note,
+		).Error
+	})
+	if txErr != nil {
+		if errors.Is(txErr, ErrNotFound) || errors.Is(txErr, ErrInsufficientBalance) {
+			return nil, txErr
+		}
+		return nil, txErr
 	}
 
 	return s.GetUser(ctx, userID)

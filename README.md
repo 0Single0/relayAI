@@ -69,7 +69,74 @@ relayAI/
 - Go：`GOPROXY=https://goproxy.cn,direct`
 - Rust：`~/.cargo/config.toml` 配镜像源
 
-## 首次启动
+## Docker 一键启动
+
+安装 Docker Engine / Docker Desktop 和 Docker Compose v2（使用 Linux 容器），在项目根目录执行：
+
+```sh
+docker compose up -d
+```
+
+首次执行会从源码构建前端、Go 后端、Rust 网关镜像，拉取 PostgreSQL，并自动生成数据库密码、凭据加密主密钥和内部接口密钥；**无需先复制 `.env` 或手动建库**。首次构建需要下载依赖，耗时取决于网络与机器性能。
+
+启动顺序为：生成密钥 → 数据库就绪 → 后端建表并通过健康检查 → 网关就绪 → Nginx。查看启动状态：
+
+```sh
+docker compose ps -a
+docker compose logs -f --tail=100 backend gateway web
+```
+
+`init` 服务正常结束后显示 `Exited (0)`，其余四个服务应显示运行中。打开 **http://localhost:8080**，在登录页注册账号；第一个注册的用户自动成为管理员。
+
+| 用途 | 默认地址 |
+| --- | --- |
+| 管理台 | `http://localhost:8080` |
+| 管理 API | `http://localhost:8080/api/v1` |
+| 客户端 Base URL | `http://localhost:8080/v1` |
+
+页面和接口通过同一个 Nginx 端口访问，支持流式响应。数据库、Go 后端、Rust 网关只在 Compose 网络内访问，网关的 `/internal/*` 不通过 Nginx 对外转发。
+
+### 数据挂载与备份
+
+全部业务数据和部署密钥均绑定挂载到**宿主机项目目录**：
+
+```text
+data/
+├── postgres/             # PostgreSQL：账号、分组、用户、设置、密钥、用量等
+└── secrets/
+    ├── postgres_password # 自动生成的数据库密码
+    ├── master_key        # 账号凭据加密主密钥
+    └── internal_token    # 后端与网关共享密钥
+```
+
+`docker compose down`、重新构建或删除容器均保留这些文件；再次启动会复用原有密钥。`data/` 已加入 Git 和镜像构建忽略列表。若发现已有数据库却缺失密钥，初始化会报错，避免生成新密钥后无法解密旧账号。
+
+完整备份时先执行 `docker compose down`，再复制整个 `data/` 目录；恢复时在服务停止的情况下放回整个目录，再执行 `docker compose up -d`。**数据库和 `secrets/` 必须一起备份，主密钥丢失会导致账号凭据无法解密。** 不要在数据库运行时直接复制 `postgres/` 文件作为备份。文件备份恢复需保持 PostgreSQL 主版本一致，本配置固定使用 16。
+
+容器日志输出到 `docker compose logs`，每个服务最多保留 3 个 10 MB 日志文件。后端配置绑定挂载自 `deploy/docker/backend.yaml`，修改后执行 `docker compose restart backend`。
+
+### 修改端口、部署到服务器
+
+可选：在根目录 `.env` 中添加以下配置（已有 `.env` 时只追加需要的项目）：
+
+```dotenv
+RELAYAI_PORT=8080
+# 管理台生成客户端配置时使用的对外根地址，不带 /v1。
+# 本机默认 http://localhost:<RELAYAI_PORT>；远程部署时改成实际 IP 或域名。
+GATEWAY_PUBLIC_BASE_URL=http://192.168.1.10:8080
+```
+
+然后执行 `docker compose up -d` 应用配置。若前面还有 HTTPS 反向代理，将 `GATEWAY_PUBLIC_BASE_URL` 设为实际的 `https://域名`。
+
+Compose 使用 `data/secrets/` 中的独立密钥和容器内数据库，不读取本地开发用的 `DATABASE_URL`、`RELAYAI_MASTER_KEY` 等环境变量。首次容器部署使用一个新库；原来本地 PostgreSQL 的数据需要另行迁移，迁移账号凭据时必须同时保留原加密主密钥。
+
+更新源码后重新构建、启动：
+
+```sh
+docker compose up -d --build
+```
+
+## 本地开发启动
 
 ### 1. 建库
 

@@ -117,6 +117,7 @@ impl Credential {
 #[derive(Debug, Clone, Default, serde::Serialize)]
 pub struct UpstreamModel {
     pub id: String,
+    pub display_name: Option<String>,
     /// 倍率字符串：`x0.00` / `0` 视为免费；缺失表示未知（按收费处理）。
     pub credits: Option<String>,
     pub context_length: Option<u64>,
@@ -127,6 +128,7 @@ pub struct UpstreamModel {
     pub context_windows: Vec<u64>,
     /// 思考档位：可选档位 / 固定档位 / 默认档 / 能否关闭 / 是否强制思考。
     pub reasoning_efforts: Vec<String>,
+    pub reasoning_effort_map: HashMap<String, String>,
     pub reasoning_fixed_effort: Option<String>,
     pub reasoning_default_effort: Option<String>,
     pub reasoning_can_disable: Option<bool>,

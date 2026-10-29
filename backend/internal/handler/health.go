@@ -11,8 +11,9 @@ import (
 func registerHealth(mux *http.ServeMux, ctx *svc.ServiceContext) {
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
 		database := "down"
+		// GORM 没有 Ping，要拿到底层 `*sql.DB` 来探活。
 		if ctx.DB != nil {
-			if err := ctx.DB.Ping(r.Context()); err == nil {
+			if sqlDB, err := ctx.DB.DB(); err == nil && sqlDB.PingContext(r.Context()) == nil {
 				database = "up"
 			}
 		}

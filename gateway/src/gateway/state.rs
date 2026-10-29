@@ -16,7 +16,7 @@ use tokio::sync::Semaphore;
 
 use crate::gateway::{
     channels::{self, AccountSnapshot, ChannelAdapter},
-    config::Config,
+    config::{Config, RouteOverride},
     core::{
         affinity::AffinityStore,
         matrix::{ChannelCatalog, Matrix},
@@ -412,7 +412,25 @@ impl GatewayState {
         self.slots.available_permits()
     }
 
-    /// 取当前矩阵；过期或不存在时**按需**重建（TTL + 双检锁，并发下只打一轮上游）。
+    /// Read the account's own catalog before applying any group publication policy.
+    pub async fn models_for_account(
+        &self,
+        account: &PoolAccount,
+    ) -> Result<Vec<channels::UpstreamModel>, GatewayError> {
+        let Some(adapter) = self.channel(&account.platform) else {
+            return Ok(Vec::new());
+        };
+        let mut models = adapter
+            .list_models(&self.client, &account.snapshot())
+            .await?
+            .unwrap_or_default();
+        models.retain(|model| {
+            account.model_allow.is_empty() || account.model_allow.contains(&model.id)
+        });
+        Ok(models)
+    }
+
+    /// 取当前矩阵；过期或不存在时按需重建（TTL + 双检锁）。
     pub async fn ensure_matrix(&self, force: bool) -> Arc<Matrix> {
         let ttl_ms = self.config().catalog_ttl_seconds.saturating_mul(1000);
         if !force {
@@ -433,34 +451,42 @@ impl GatewayState {
 
         let config = self.config();
         let mut catalogs = Vec::new();
-        for channel in self.channels() {
-            let channel_config = config_for_channel(&config, channel.id());
-            // 名下账号全被停用时不再拉目录：否则 `/v1/models` 会照常宣称一堆模型，
-            // 调度时却一个都挑不出来。
-            let named = self.pool.by_channel(channel.id());
-            if !named.is_empty() && named.iter().all(|account| !account.enabled) {
+        let mut overrides = Vec::new();
+        let groups = self.storage.list_channels().await.unwrap_or_default();
+        for channel in groups.iter().filter(|channel| channel.enabled) {
+            // Aggregate real assigned accounts, including each custom account's own catalog.
+            let mut models = Vec::new();
+            let accounts = self.pool.by_channel(&channel.id);
+            for account in accounts.iter().filter(|account| account.enabled) {
+                if let Ok(entries) = self.models_for_account(account).await {
+                    for model in entries {
+                        if !channel.model_allow.is_empty() && !channel.model_allow.contains(&model.id) {
+                            overrides.push(RouteOverride {
+                                model: model.id.clone(),
+                                channel_id: channel.id.clone(),
+                                enabled: Some(false),
+                                ..Default::default()
+                            });
+                        }
+                        if !models.iter().any(|existing: &channels::UpstreamModel| existing.id == model.id) {
+                            models.push(model);
+                        }
+                    }
+                }
+            }
+            if models.is_empty() {
                 continue;
             }
-            let account = self
-                .first_account_for(channel.id())
-                .unwrap_or_else(|| AccountSnapshot {
-                    channel_id: channel.id().to_string(),
-                    ..AccountSnapshot::default()
-                });
-            let (models, live) = match channel.list_models(&self.client, &account).await {
-                Ok(Some(models)) => (models, true),
-                _ => (Vec::new(), false),
-            };
             catalogs.push(ChannelCatalog {
-                channel_id: channel.id().to_string(),
-                priority: channel_config.map(|entry| entry.priority).unwrap_or(100),
-                weight: channel_config.map(|entry| entry.weight).unwrap_or(1),
+                channel_id: channel.id.clone(),
+                priority: channel.priority,
+                weight: channel.weight,
                 models,
-                live,
+                live: true,
             });
         }
 
-        let matrix = Arc::new(Matrix::build(&catalogs, &config.aliases, &[]));
+        let matrix = Arc::new(Matrix::build(&catalogs, &config.aliases, &overrides));
         if let Ok(mut slot) = self.matrix.write() {
             *slot = Some(Arc::clone(&matrix));
         }
@@ -503,6 +529,10 @@ impl GatewayState {
         let accounts = build_accounts(&config, &adapters, &records, &mut warnings);
         let count = accounts.len();
         self.pool.replace(accounts);
+        if let Ok(mut slot) = self.matrix.write() {
+            *slot = None;
+        }
+        self.matrix_built_at.store(0, Ordering::Relaxed);
         if !warnings.is_empty() {
             if let Ok(mut slot) = self.warnings.write() {
                 *slot = warnings;
@@ -710,16 +740,6 @@ impl GatewayState {
 
 /// 内存里保留多少条决策（面板一次看不到更多）。
 const DECISION_HISTORY: usize = 200;
-
-fn config_for_channel<'a>(
-    config: &'a Config,
-    channel_id: &str,
-) -> Option<&'a crate::gateway::config::ChannelConfig> {
-    // 渠道配置已不再存在 Config 里（改由 PG 管理），这里返回 None 让调用方用默认值。
-    // 保留这个函数是为了让 `ensure_matrix` 的写法与原实现一致，便于后续接入覆盖配置。
-    let _ = (config, channel_id);
-    None
-}
 
 /// 按一条代理记录构建专属 HTTP 客户端。
 ///

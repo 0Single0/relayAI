@@ -107,6 +107,8 @@ fn parse_model_entry(value: &Value) -> Option<UpstreamModel> {
 
     Some(UpstreamModel {
         id,
+        display_name: value.get("display_name").or_else(|| value.get("displayName"))
+            .and_then(Value::as_str).map(str::trim).filter(|name| !name.is_empty()).map(str::to_string),
         credits,
         context_length,
         max_output_tokens,
@@ -146,6 +148,10 @@ fn parse_model_entry(value: &Value) -> Option<UpstreamModel> {
             .get("reasoning_default_effort")
             .and_then(Value::as_str)
             .map(str::to_string),
+        reasoning_effort_map: value.get("reasoning_effort_map")
+            .and_then(Value::as_object)
+            .map(|map| map.iter().filter_map(|(key, value)| value.as_str().map(|value| (key.clone(), value.to_string()))).collect())
+            .unwrap_or_default(),
         always_reasoning: flag(&["always_reasoning", "onlyReasoning"]),
         // 配置与实时拉取都是**当前**事实；同时也是用户显式声明的模型。
         from_snapshot: false,
@@ -182,7 +188,7 @@ pub fn models_url_candidates(base_url: &str, override_url: Option<&str>) -> Vec<
         return Vec::new();
     }
     // 完整端点（用户直接粘了 `/chat/completions`）：截到版本根。
-    for suffix in ["/chat/completions", "/messages", "/completions"] {
+    for suffix in ["/chat/completions", "/responses", "/messages", "/completions"] {
         if let Some(index) = base.find(suffix) {
             base.truncate(index);
             break;

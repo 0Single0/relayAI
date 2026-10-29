@@ -25,8 +25,6 @@ import { getRequestErrorMessage } from "@/utils/request";
 type ChannelFormSheetProps = {
   open: boolean;
   channel: Channel | null;
-  /** 可选模型（来自模型目录），用于配对外白名单。 */
-  models: Array<{ name: string }>;
   onOpenChange: (open: boolean) => void;
   onSaved: () => void;
 };
@@ -40,8 +38,6 @@ type FormState = {
   channelRatio: string;
   concurrencyLimit: string;
   rateLimitQps: string;
-  /** 对外暴露的模型白名单；空 = 不限制。 */
-  modelAllow: string[];
   /**
    * 这个分组用哪个适配器。
    *
@@ -64,8 +60,6 @@ const emptyForm: FormState = {
   channelRatio: "1.00",
   concurrencyLimit: "",
   rateLimitQps: "",
-  // 空 = 不限制：该分组下账号能跑的模型全部对外。
-  modelAllow: [],
   adapter: "workbuddy",
   realm: "cn",
 };
@@ -79,7 +73,6 @@ const fromChannel = (channel: Channel): FormState => ({
   channelRatio: channel.channelRatio.toFixed(2),
   concurrencyLimit: channel.concurrencyLimit === null ? "" : String(channel.concurrencyLimit),
   rateLimitQps: channel.rateLimitQps === null ? "" : String(channel.rateLimitQps),
-  modelAllow: channel.modelAllow ?? [],
   adapter: channel.adapter,
   realm: (channel.options?.realm === "intl" ? "intl" : "cn") as "cn" | "intl",
 });
@@ -117,20 +110,12 @@ const Field = ({
 /**
  * 新建 / 编辑渠道。
  *
- * **渠道 = 计价分组。** 它只管倍率与并发/QPS 上限。
- *
- * 这里刻意**没有**「类型 / 平台 / 区域 / 出站身份 / Base URL / API Key」：
- *   · 平台（接哪家上游）是**账号**的属性 —— 一个分组下可以混不同平台的号；
- *   · 凭据（Key / 地址 / 协议 / realm）也是账号的属性。
- *
- * 早先版本把这些放在渠道上，结果是"建了个 WorkBuddy 渠道"才有地方加
- * WorkBuddy 账号 —— 用户想加号却被要求先建渠道，而且一个渠道只能有一种平台。
- * 现在的顺序是：先建（或复用一个）计价分组 → 再往里加任意平台的账号。
+ * 分组固定平台与版本，配置计价倍率和限流；账号单独保存上游凭据。
+ * 对外模型在独立弹窗配置，编辑基本信息不会改动发布策略。
  */
 export const ChannelFormSheet = ({
   open,
   channel,
-  models,
   onOpenChange,
   onSaved,
 }: ChannelFormSheetProps) => {
@@ -180,8 +165,7 @@ export const ChannelFormSheet = ({
   const buildPayload = (): ChannelPayload => ({
     id: form.id.trim(),
     name: form.name.trim(),
-    // 渠道不再绑定平台。传 custom 只是为了满足旧接口的字段要求，
-    // 它已经不再参与任何调度或适配器选择（见迁移 010 的注释）。
+    // 分组的平台及版本用于限制可归入的账号。
     adapter: form.adapter,
     enabled: form.enabled,
     // 分组级 priority / weight 在界面上已移除（Key 与分组 1:1，永不参与比较），
@@ -192,8 +176,6 @@ export const ChannelFormSheet = ({
     channelRatio: Number(form.channelRatio),
     concurrencyLimit: form.concurrencyLimit.trim() ? Number(form.concurrencyLimit) : null,
     rateLimitQps: form.rateLimitQps.trim() ? Number(form.rateLimitQps) : null,
-    // 空数组 = 清空限制（不限制），不是"一个都不给"。
-    modelAllow: form.modelAllow,
   });
 
   const submit = async () => {
@@ -230,8 +212,7 @@ export const ChannelFormSheet = ({
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
           <DialogDescription>
-            渠道是计价分组：决定倍率与限流。平台与 API Key 属于账号，
-            在「新建账号」里选。
+            分组用于配置倍率与限流，仅接收相同平台及版本的账号。API Key 在「新建账号」中填写。
           </DialogDescription>
         </DialogHeader>
 
@@ -273,15 +254,16 @@ export const ChannelFormSheet = ({
                 ? form.realm === "cn"
                   ? "国内版：支持任务与签到"
                   : "国际版：无任务，只有每日对话"
-                : "自定义供应商：无运营能力"
+                : form.adapter === "trae" ? "Trae：支持签到" : "自定义供应商：无运营能力"
             }
           >
-            <Select value={form.adapter} onValueChange={(next) => update("adapter", next as Channel["adapter"])}>
+            <Select disabled={isEdit} value={form.adapter} onValueChange={(next) => update("adapter", next as Channel["adapter"])}>
               <SelectTrigger aria-label="平台">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="workbuddy">WorkBuddy</SelectItem>
+                <SelectItem value="trae">Trae</SelectItem>
                 <SelectItem value="custom">自定义供应商</SelectItem>
               </SelectContent>
             </Select>
@@ -293,6 +275,7 @@ export const ChannelFormSheet = ({
               hint="国内版与国际版的上游域名不同，账号不能混用"
             >
               <Select
+                disabled={isEdit}
                 value={form.realm}
                 onValueChange={(next) => update("realm", next as "cn" | "intl")}
               >
@@ -368,70 +351,6 @@ export const ChannelFormSheet = ({
             />
           </Field>
         </div>
-
-        {/*
-          对外模型白名单 —— **只在编辑已有分组时出现**。
-
-          为什么新建时不显示：新分组里一个账号都没有，网关也就没有它的模型目录，
-          这时候能选的模型要么是空的、要么是全站的（没有依据）。
-          让人在"还不知道这个组能跑什么"的时候先决定"对外卖什么"，顺序是反的。
-
-          正确顺序：建分组 → 加账号 → 网关拉到目录 → 再回来配对外模型。
-        */}
-        {channel ? (
-        <div className="mt-3 flex flex-col gap-1.5">
-          <div className="flex items-baseline justify-between">
-            <span className="text-xs font-medium">对外模型</span>
-            <span className="text-[11px] text-muted-foreground">
-              {form.modelAllow.length === 0
-                ? "不限制（该分组能跑的模型全部对外）"
-                : `已选 ${form.modelAllow.length} 个`}
-            </span>
-          </div>
-
-          <div className="max-h-40 overflow-y-auto rounded-md border p-2">
-            {models.length === 0 ? (
-              <p className="px-1 text-xs text-muted-foreground">
-                还没有模型目录。先去「模型广场」同步一次。
-              </p>
-            ) : (
-              <div className="flex flex-wrap gap-1.5">
-                {models.map((model) => {
-                  const checked = form.modelAllow.includes(model.name);
-                  return (
-                    <button
-                      key={model.name}
-                      type="button"
-                      onClick={() =>
-                        setForm((prev) => ({
-                          ...prev,
-                          modelAllow: checked
-                            ? prev.modelAllow.filter((item) => item !== model.name)
-                            : [...prev.modelAllow, model.name],
-                        }))
-                      }
-                      aria-pressed={checked}
-                      className={cn(
-                        "cursor-pointer rounded-full border px-2 py-0.5 font-mono text-[11px] transition-colors",
-                        "focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:outline-none",
-                        checked
-                          ? "border-primary bg-primary/10 text-primary"
-                          : "border-border text-muted-foreground hover:border-border-strong",
-                      )}
-                    >
-                      {model.name}
-                    </button>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-        </div>
-        ) : (
-          <p className="mt-3 rounded-md bg-muted/50 px-3 py-2 text-[11px] leading-5 text-muted-foreground">
-            保存后先给这个分组添加账号；网关拉到模型目录后，再回来配置「对外模型」。
-          </p>
-        )}
 
         {submitError ? <ErrorState title="保存失败" message={submitError} /> : null}
 

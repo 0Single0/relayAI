@@ -57,6 +57,35 @@ fn request() -> CanonicalRequest {
     }
 }
 
+#[tokio::test]
+async fn account_model_catalogs_are_isolated() {
+    let channel = CustomChannel::from_options("custom", &json!({"models": ["global-model"]}));
+    let client = reqwest::Client::new();
+    for name in ["account-a-model", "account-b-model"] {
+        let account = AccountSnapshot { options: Some(json!({"models": [name]})), ..Default::default() };
+        let models = channel.list_models(&client, &account).await.unwrap().unwrap();
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].id, name);
+    }
+    let empty = AccountSnapshot { options: Some(json!({"models": []})), ..Default::default() };
+    assert!(channel.list_models(&client, &empty).await.unwrap().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn model_discovery_uses_standard_endpoint_and_auth() {
+    use axum::{http::HeaderMap, routing::get, Json, Router};
+    let app = Router::new().route("/v1/models", get(|headers: HeaderMap| async move {
+        assert_eq!(headers["authorization"], "Bearer test-key");
+        Json(json!({"data": [{"id": "model-a"}, {"id": "model-b"}, {"id": "model-a"}]}))
+    }));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap(); });
+    let result = super::fetch_models(&reqwest::Client::new(), &format!("http://{address}/v1"), None, "test-key", "openai-chat").await.unwrap();
+    assert_eq!(result.iter().map(|model| model.id.as_str()).collect::<Vec<_>>(), ["model-a", "model-b"]);
+    server.abort();
+}
+
 #[test]
 fn openai_body_rebuilds_messages_and_drops_client_system_field() {
     let body = build_openai_body(&request());
@@ -71,6 +100,48 @@ fn openai_body_rebuilds_messages_and_drops_client_system_field() {
     assert_eq!(body["stream"], true);
     // tool 结果保留 call id。
     assert_eq!(body["messages"][3]["tool_call_id"], "call_1");
+}
+
+#[test]
+fn account_model_settings_drive_outbound_requests() {
+    let channel = CustomChannel::from_options("custom", &json!({"models": [{"id": "gpt-x", "max_output_tokens": 10}]}));
+    let mut account = AccountSnapshot {
+        base_url: Some("https://example.test/v1".into()),
+        options: Some(json!({"models": [{
+            "id": "gpt-x", "display_name": "Configured name", "context_length": 1000000,
+            "max_output_tokens": 32000, "capabilities": {"vision": true, "reasoning": true},
+            "reasoning_efforts": ["off", "high"], "reasoning_effort_map": {"off": "none", "high": "max"}
+        }]})),
+        ..Default::default()
+    };
+    let metadata = channel.model_meta(&account, "gpt-x").unwrap();
+    assert_eq!(metadata.display_name.as_deref(), Some("Configured name"));
+    assert_eq!(metadata.context_length, Some(1000000));
+    assert!(metadata.capabilities.vision);
+    let mut req = request();
+    req.max_tokens = None;
+    req.reasoning = Some(crate::gateway::protocol::cir::Reasoning { enabled: Some(true), effort: Some("high".into()) });
+    for protocol in ["openai-chat", "openai-responses", "anthropic"] {
+        account.protocol = Some(protocol.into());
+        let body = channel.build_chat_request(&account, &req).unwrap().body;
+        match protocol {
+            "openai-chat" => { assert_eq!(body["reasoning_effort"], "max"); assert_eq!(body["max_tokens"], 32000); }
+            "openai-responses" => { assert_eq!(body["reasoning"]["effort"], "max"); assert_eq!(body["max_output_tokens"], 32000); }
+            _ => { assert_eq!(body["thinking"]["type"], "adaptive"); assert_eq!(body["output_config"]["effort"], "max"); assert_eq!(body["max_tokens"], 32000); }
+        }
+        let mut disabled = req.clone();
+        disabled.reasoning.as_mut().unwrap().enabled = Some(false);
+        let body = channel.build_chat_request(&account, &disabled).unwrap().body;
+        match protocol {
+            "openai-chat" => assert_eq!(body["reasoning_effort"], "none"),
+            "openai-responses" => assert_eq!(body["reasoning"]["effort"], "none"),
+            _ => assert_eq!(body["thinking"]["type"], "disabled"),
+        }
+    }
+    req.max_tokens = Some(200);
+    assert_eq!(channel.build_chat_request(&account, &req).unwrap().body["max_tokens"], 200);
+    account.options = Some(json!({"models": []}));
+    assert!(channel.model_meta(&account, "gpt-x").is_none(), "account catalog must not inherit another catalog's settings");
 }
 
 #[test]

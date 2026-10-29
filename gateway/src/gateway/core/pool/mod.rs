@@ -137,6 +137,20 @@ mod tests {
     }
 
     #[test]
+    fn rebuild_applies_changed_concurrency_and_default() {
+        let pool = pool_with(&[("fake", "u1")]);
+        pool.accounts()[0].set_max_inflight(3);
+        let changed = pool_with(&[("fake", "u1")]);
+        changed.accounts()[0].set_max_inflight(1111);
+        pool.replace(changed.accounts());
+        assert_eq!(pool.accounts()[0].max_inflight(), 1111);
+        let defaulted = pool_with(&[("fake", "u1")]);
+        defaulted.accounts()[0].set_max_inflight(3);
+        pool.replace(defaulted.accounts());
+        assert_eq!(pool.accounts()[0].max_inflight(), 3);
+    }
+
+    #[test]
     fn accounts_can_be_listed_by_channel_and_replaced() {
         let pool = pool_with(&[("wb-cn", "u1"), ("qoder", "u2")]);
         assert_eq!(pool.by_channel("wb-cn").len(), 1);

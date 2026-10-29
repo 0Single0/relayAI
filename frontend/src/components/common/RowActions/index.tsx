@@ -13,6 +13,13 @@ export type RowAction = {
    */
   id: string;
   icon: LucideIcon;
+  /**
+   * 用第三方产品图标替换 Lucide 图标（如 CC Switch 的官方 logo）。
+   *
+   * 指向 `public/` 下的静态资源；给了它就不再渲染 `icon`，
+   * 产品身份用官方 logo 比 Lucide 里的相似图形更准确。
+   */
+  iconSrc?: string;
   onClick: () => void;
   /** 语义色：不同动作给不同悬停底色。 */
   tone?: "default" | "primary" | "success" | "warning" | "danger";
@@ -77,7 +84,17 @@ export const RowActions = ({
               toneClass[action.tone ?? "default"],
             )}
           >
-            <Icon className="size-4" aria-hidden="true" />
+            {action.iconSrc ? (
+              <img
+                src={action.iconSrc}
+                alt=""
+                aria-hidden="true"
+                loading="lazy"
+                className="size-4 object-contain"
+              />
+            ) : (
+              <Icon className="size-4" aria-hidden="true" />
+            )}
           </button>
         );
       })}

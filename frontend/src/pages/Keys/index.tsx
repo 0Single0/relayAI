@@ -47,7 +47,7 @@ import { getRequestErrorMessage } from "@/utils/request";
  * 列与交互对齐 sub2api 的 `views/user/KeysView.vue`：
  *   · **API 密钥列**：脱敏显示 + 一键复制（明文存在库里，可反复复制）；
  *   · **渠道列**：显示绑定的渠道，未绑定 = "全部渠道"；
- *   · **操作列**：图标在上、文字在下的竖排按钮
+ *   · **操作列**：纯图标按钮，CC Switch 导入用它的官方 logo
  *     （使用密钥 / 导入 CCS / 禁用 / 编辑 / 删除），不是 `⋯` 菜单。
  *
  * 为什么"渠道"必须能选：一个 Key 绑一个渠道，才能做到
@@ -372,11 +372,14 @@ export const KeysPage = () => {
               {
                 label: key.plaintext ? "导入 CC Switch" : "明文已丢失，请轮换",
                 id: "ccs",
+                // 用 CC Switch 官方 logo 而不是 Download：这是"导入到
+                // 哪个产品"的动作，产品身份用它的 logo 更准确。
                 icon: Download,
+                iconSrc: "/logos/ccswitch.svg",
                 tone: "primary",
                 disabled: !key.plaintext,
                 // 不直接导入：先让用户选客户端类型。
-                // CC Switch 里 Claude / Gemini 是两套不同的配置格式，
+                // CC Switch 里 Claude / Codex / Gemini 是三套不同的配置格式，
                 // 猜错了会往错误的客户端里塞配置。
                 onClick: () => setCcsTarget(key),
               },
@@ -637,11 +640,31 @@ export const KeysPage = () => {
               </p>
             </div>
 
-            <div className="grid grid-cols-2 gap-2">
+            <div className="grid grid-cols-3 gap-2">
               {(
                 [
-                  { type: "claude" as const, label: "Claude Code", hint: "app=claude" },
-                  { type: "gemini" as const, label: "Gemini CLI", hint: "app=gemini" },
+                  {
+                    type: "claude" as const,
+                    label: "Claude Code",
+                    hint: "app=claude",
+                    icon: "/logos/anthropic.svg",
+                  },
+                  {
+                    type: "codex" as const,
+                    label: "Codex CLI",
+                    hint: "app=codex",
+                    // OpenAI 商标已从图标源下架（见 ModelLogo/vendor.ts 的记录），
+                    // 按同一约定用 "AI" 字母标记，不伪造图形。
+                    icon: null,
+                    mark: "AI",
+                    markClass: "bg-emerald-600/15 text-emerald-700",
+                  },
+                  {
+                    type: "gemini" as const,
+                    label: "Gemini CLI",
+                    hint: "app=gemini",
+                    icon: "/logos/googlegemini.svg",
+                  },
                 ]
               ).map((option) => (
                 <Button
@@ -670,8 +693,26 @@ export const KeysPage = () => {
                       );
                     }
                   }}
-                  className="flex h-auto flex-col items-start gap-0.5 py-2"
+                  className="flex h-auto flex-col items-center gap-1 py-2.5"
                 >
+                  {option.icon ? (
+                    <img
+                      src={option.icon}
+                      alt=""
+                      aria-hidden="true"
+                      className="size-5 object-contain"
+                    />
+                  ) : (
+                    <span
+                      aria-hidden="true"
+                      className={cn(
+                        "inline-flex size-5 items-center justify-center rounded-md text-[9px] font-semibold",
+                        option.markClass,
+                      )}
+                    >
+                      {option.mark}
+                    </span>
+                  )}
                   <span className="text-xs font-medium">{option.label}</span>
                   <span className="text-[11px] text-muted-foreground">{option.hint}</span>
                 </Button>

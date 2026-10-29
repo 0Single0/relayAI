@@ -64,13 +64,13 @@ export const ChannelAccountsTab = ({ channel }: ChannelAccountsTabProps) => {
     },
     {
       key: "inflight",
-      header: "在飞",
+      header: "并发",
       width: "70px",
       align: "right",
       hideOnMobile: true,
       render: (account) => (
         <span className="tabular-nums text-muted-foreground">
-          {account.runtime ? `${account.runtime.inflight}/${account.maxInflight ?? "∞"}` : "—"}
+          {account.runtime ? `${account.runtime.inflight}/${account.runtime.maxInflight}` : "—"}
         </span>
       ),
     },

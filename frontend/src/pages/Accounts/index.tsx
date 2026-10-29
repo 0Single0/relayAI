@@ -1,17 +1,27 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Ban,
   CheckCircle2,
+  Coins,
+  FlaskConical,
   PencilLine,
   Plus,
   RefreshCw,
+  RotateCcw,
   Search,
   Trash2,
   UserRound,
 } from "lucide-react";
-import { deleteAccount, listAccounts, updateAccount } from "@/api/accounts";
+import {
+  listAccounts,
+  refreshAccountQuotas,
+  resetAccountCooldowns,
+  deleteAccount,
+  updateAccount,
+} from "@/api/accounts";
+import { listCatalogModels, type CatalogModel } from "@/api/catalog";
 import { listChannels } from "@/api/channels";
-import { listProxies, setAccountProxy, type Proxy } from "@/api/proxies";
+import { listProxies, type Proxy } from "@/api/proxies";
 import type { Account, Channel } from "@/api/types";
 import { DataTable, type Column } from "@/components/common/DataTable";
 import { EmptyState } from "@/components/common/EmptyState";
@@ -38,21 +48,17 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { AccountStatusCell } from "@/pages/Accounts/components/AccountStatusCell";
+import { ModelListButton, ModelListDialog } from "@/pages/Accounts/components/ModelListDialog";
+import { ProbeDialog } from "@/pages/Accounts/components/ProbeDialog";
 import { CreateAccountDrawer } from "@/pages/Accounts/components/CreateAccountDrawer";
+import { EditAccountDialog } from "@/pages/Accounts/components/EditAccountDialog";
 import { toast } from "@/components/common/Toast/store";
-import { platformLabel } from "@/pages/Channels/shared";
+import { accountMatchesChannel, accountPlatformLabel } from "@/pages/Channels/shared";
 import { compactNumber } from "@/lib/charts";
 import { cn } from "@/lib/utils";
 import { getRequestErrorMessage } from "@/utils/request";
 
 const ALL = "__all__";
-
-const inputClass = cn(
-  "h-8 w-full rounded-md border border-input bg-background px-2.5 text-sm",
-  "placeholder:text-muted-foreground",
-  "hover:border-border-strong",
-  "focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/30 focus-visible:outline-none",
-);
 
 /**
  * 账号列表。
@@ -70,6 +76,8 @@ export const AccountsPage = () => {
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [channels, setChannels] = useState<Channel[]>([]);
   const [proxies, setProxies] = useState<Proxy[]>([]);
+  /** 模型目录：给模型列算"这个账号能用哪些模型"。 */
+  const [catalogModels, setCatalogModels] = useState<CatalogModel[]>([]);
   const [error, setError] = useState("");
   const [isLoading, setIsLoading] = useState(true);
   const [channelFilter, setChannelFilter] = useState(ALL);
@@ -81,6 +89,10 @@ export const AccountsPage = () => {
 
   const [createOpen, setCreateOpen] = useState(false);
   const [editing, setEditing] = useState<Account | null>(null);
+  /** 正在测试凭据的账号；非空时打开测试弹窗。 */
+  const [probing, setProbing] = useState<Account | null>(null);
+  /** 查看模型清单的账号；非空时打开模型弹窗。 */
+  const [modelTarget, setModelTarget] = useState<Account | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<Account | null>(null);
   const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
   const [busy, setBusy] = useState("");
@@ -88,14 +100,17 @@ export const AccountsPage = () => {
   const load = useCallback(async () => {
     setIsLoading(true);
     try {
-      const [accountResponse, channelResponse, proxyResponse] = await Promise.all([
+      const [accountResponse, channelResponse, proxyResponse, catalogResponse] = await Promise.all([
         listAccounts({ pageSize: 200 }),
         listChannels().catch(() => null),
         listProxies().catch(() => null),
+        // 模型目录用来回答"这个账号能用哪些模型"——模型列要靠它列出清单。
+        listCatalogModels().catch(() => null),
       ]);
       setAccounts(accountResponse.data?.list ?? []);
       setChannels(channelResponse?.data ?? []);
       setProxies(proxyResponse?.data ?? []);
+      setCatalogModels(catalogResponse?.data?.models ?? []);
       setError("");
     } catch (requestError) {
       setError(getRequestErrorMessage(requestError));
@@ -107,6 +122,100 @@ export const AccountsPage = () => {
   useEffect(() => {
     void load();
   }, [load, reloadKey]);
+
+  /*
+    积分刷新：按钮立即刷，页面停留期间每 30s 自动刷一次。
+
+    为什么不复用 load()：那是整表重载（账号 + 渠道 + 代理 + 模型目录四个请求，
+    还会把 loading 蒙层盖回来）。积分刷新后只需要重拉一次账号列表 ——
+    那个请求读的是网关内存快照（不打上游），轻且能带回刷新后的额度。
+    其余列就地更新，不闪蒙层、不丢滚动位置。
+
+    自动刷新只在「账号页打开」期间运行（effect 卸载即停），
+    离开页面就不再消耗上游额度。
+  */
+  const [quotaPending, setQuotaPending] = useState(false);
+  const quotaPendingRef = useRef(false);
+
+  /** 只重拉账号列表，不触发整页 loading（额度/状态就地更新）。 */
+  const reloadAccountsQuiet = useCallback(async () => {
+    try {
+      const response = await listAccounts({ pageSize: 200 });
+      setAccounts(response.data?.list ?? []);
+    } catch {
+      // 静默失败：下一轮刷新或手动「刷新」会再拉。
+    }
+  }, []);
+
+  const refreshQuotas = useCallback(async (silent = false) => {
+    // ref 而不是 state 做防重入：state 置位是异步的，30s 轮询与按钮连点
+    // 可能在同一个 tick 里双双通过检查。
+    if (quotaPendingRef.current) {
+      return;
+    }
+    quotaPendingRef.current = true;
+    setQuotaPending(true);
+    try {
+      const response = await refreshAccountQuotas();
+      const summary = response.data;
+      await reloadAccountsQuiet();
+
+      if (summary && summary.total > 0) {
+        const failures = summary.results.filter((result) => !result.ok);
+        if (summary.ok === 0) {
+          // 全部失败通常意味着网关不可用。手动点按钮时明确提示；
+          // 自动轮询保持安静，否则网关一挂每 30s 弹一次错。
+          if (!silent) {
+            toast.error(
+              "积分刷新失败",
+              failures[0]?.error ?? "网关不可用，请稍后重试",
+            );
+          }
+        } else if (failures.length > 0 && !silent) {
+          toast.info(
+            "部分账号积分未刷新",
+            `${failures.length} 个账号刷新失败，其余已更新`,
+          );
+        }
+      }
+    } catch (requestError) {
+      // 自动轮询失败保持安静（下一轮会重试）；手动按钮才弹错。
+      if (!silent) {
+        toast.error("积分刷新失败", getRequestErrorMessage(requestError));
+      }
+    } finally {
+      quotaPendingRef.current = false;
+      setQuotaPending(false);
+    }
+  }, [reloadAccountsQuiet]);
+
+  /*
+    自动轮询：30s 间隔，静默模式（失败不弹提示）。
+    窗口隐藏时跳过 —— 上游额度接口虽轻，页面根本看不见时刷它
+    纯属浪费、也容易撞风控。
+  */
+  useEffect(() => {
+    const AUTO_INTERVAL_MS = 30_000;
+
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === "visible") {
+        void refreshQuotas(true);
+      }
+    }, AUTO_INTERVAL_MS);
+
+    const onVisible = () => {
+      // 切回页面立即刷一次，不等下一个 30s。
+      if (document.visibilityState === "visible") {
+        void refreshQuotas(true);
+      }
+    };
+    document.addEventListener("visibilitychange", onVisible);
+
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [refreshQuotas]);
 
   const filtered = useMemo(() => {
     const trimmed = keyword.trim().toLowerCase();
@@ -121,7 +230,8 @@ export const AccountsPage = () => {
         account.uid.toLowerCase().includes(trimmed) ||
         account.nickname.toLowerCase().includes(trimmed) ||
         account.channelId.toLowerCase().includes(trimmed) ||
-        account.platform.toLowerCase().includes(trimmed)
+        account.platform.toLowerCase().includes(trimmed) ||
+        accountPlatformLabel(account).toLowerCase().includes(trimmed)
       );
     });
   }, [accounts, channelFilter, keyword]);
@@ -151,18 +261,52 @@ export const AccountsPage = () => {
         return;
       }
       setBusy(`refresh-${account.id}`);
-      toast.success("");
       try {
         await updateAccount(account.id, {});
+        toast.success("凭据已刷新", account.nickname || account.uid);
         setReloadKey((value) => value + 1);
       } catch (requestError) {
-        setError(getRequestErrorMessage(requestError));
+        toast.error("刷新凭据失败", getRequestErrorMessage(requestError));
       } finally {
         setBusy("");
       }
     },
     [],
   );
+
+  /**
+   * 打开测试弹窗。
+   *
+   * 不在按钮上直接发请求：上游限流按模型生效，
+   * 必须让人先选模型 —— 否则测到的可能恰好是被限流的那个，
+   * 得出"号废了"的错误结论。
+   */
+  const probe = useCallback((account: Account) => {
+    setProbing(account);
+  }, []);
+
+  /**
+   * 重置冷却：把账号级 + 模型级冷却一起清掉。
+   *
+   * `cleared=false` 说明本来就没在冷却 —— 如实提示，
+   * 别让人以为"点了没生效"。
+   */
+  const resetCooldown = useCallback(async (account: Account) => {
+    setBusy(`reset-${account.id}`);
+    try {
+      const response = await resetAccountCooldowns(account.id);
+      if (response.data?.cleared) {
+        toast.success("已重置冷却", "该账号可以立即参与调度");
+      } else {
+        toast.info("本来就没有冷却", "该账号当前可用");
+      }
+      setReloadKey((value) => value + 1);
+    } catch (requestError) {
+      toast.error("重置失败", getRequestErrorMessage(requestError));
+    } finally {
+      setBusy("");
+    }
+  }, []);
 
   const toggleEnabled = useCallback(async (account: Account) => {
     try {
@@ -195,6 +339,48 @@ export const AccountsPage = () => {
     [accounts],
   );
 
+  /**
+   * 批量分配分组。
+
+   * 为什么需要：号可以先建、后归组 —— 尤其批量导入之后，
+   * 逐个进编辑框改分组是纯粹的体力活。
+   * `channelId` 传空串表示把选中的号全部摘回"待分配"。
+   */
+  const assignMany = useCallback(
+    async (ids: string[], target: string) => {
+      const targetChannel = channels.find((channel) => channel.id === target);
+      if (target && (!targetChannel || ids.some((id) => {
+        const account = accounts.find((item) => String(item.id) === id);
+        return !account || !accountMatchesChannel(account, targetChannel);
+      }))) {
+        toast.error("无法分配", "所选账号必须与目标分组的平台及版本一致");
+        return;
+      }
+      setBusy("assign");
+      setError("");
+      try {
+        for (const key of ids) {
+          const account = accounts.find((item) => String(item.id) === key);
+          if (account) {
+            await updateAccount(account.id, { channelId: target });
+          }
+        }
+        setSelected(new Set());
+        toast.success(
+          target ? "已分配到分组" : "已解除分配",
+          `${ids.length} 个账号`,
+        );
+        setReloadKey((value) => value + 1);
+      } catch (requestError) {
+        toast.error("批量分配失败", getRequestErrorMessage(requestError));
+        setReloadKey((value) => value + 1);
+      } finally {
+        setBusy("");
+      }
+    },
+    [accounts, channels],
+  );
+
   const columns: Array<Column<Account>> = useMemo(
     () => [
       {
@@ -217,9 +403,9 @@ export const AccountsPage = () => {
       {
         key: "platform",
         header: "平台",
-        width: "112px",
+        width: "152px",
         render: (account) => (
-          <StatusBadge tone="neutral" label={platformLabel(account.platform)} dot={false} />
+          <StatusBadge tone="neutral" label={accountPlatformLabel(account)} dot={false} />
         ),
       },
       {
@@ -256,8 +442,8 @@ export const AccountsPage = () => {
       },
       {
         key: "capacity",
-        header: "在飞",
-        width: "80px",
+        header: "并发",
+        width: "108px",
         align: "center",
         render: (account) => <CapacityCell account={account} />,
       },
@@ -304,6 +490,23 @@ export const AccountsPage = () => {
         render: (account) => <AccountStatusCell account={account} />,
       },
       {
+        key: "models",
+        header: "模型",
+        width: "132px",
+        /*
+          单独一列：状态回答"号能不能用"，这列回答"有哪些模型、哪些在限流"。
+          合并会把"号还能跑其他模型"这个关键事实盖掉。
+          点开是弹窗而不是行内展开：十几个模型铺在行里会把行高撑爆。
+        */
+        render: (account) => (
+          <ModelListButton
+            account={account}
+            catalog={catalogModels}
+            onOpen={() => setModelTarget(account)}
+          />
+        ),
+      },
+      {
         key: "actions",
         header: "操作",
         width: "220px",
@@ -320,6 +523,32 @@ export const AccountsPage = () => {
                   tone: "primary",
                   disabled: !refreshable || busy === `refresh-${account.id}`,
                   onClick: () => void refresh(account),
+                },
+                {
+                  /*
+                    测试：用这个账号真实发一句 hi，确认凭据可用。
+
+                    与"刷新凭据"是两件事：那个换 token，这个验证"现在能不能跑"。
+                    账号显示"正常"但实际被上游挡了的情形，只有真发一次才看得出来。
+                  */
+                  label: "测试凭据",
+                  id: "probe",
+                  icon: FlaskConical,
+                  disabled: busy === `probe-${account.id}`,
+                  onClick: () => void probe(account),
+                },
+                {
+                  /*
+                    重置冷却：把账号级 + 模型级冷却一起清掉。
+
+                    上游恢复得比退避策略早时，自动等待会让号白闲着。
+                    没用冷却时点它是无害的 —— 会提示"本来就没在冷却"。
+                  */
+                  label: "重置冷却",
+                  id: "reset",
+                  icon: RotateCcw,
+                  disabled: busy === `reset-${account.id}`,
+                  onClick: () => void resetCooldown(account),
                 },
                 {
                   label: account.enabled ? "禁用" : "启用",
@@ -347,7 +576,7 @@ export const AccountsPage = () => {
         },
       },
     ],
-    [busy, refresh, toggleEnabled],
+    [busy, refresh, probe, resetCooldown, toggleEnabled, catalogModels],
   );
 
   return (
@@ -390,19 +619,72 @@ export const AccountsPage = () => {
         </div>
 
         {selected.size > 0 ? (
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => setBulkDeleteOpen(true)}
-            disabled={busy === "delete"}
-            className="text-destructive hover:bg-destructive/10 hover:text-destructive"
-          >
-            <Trash2 aria-hidden="true" />
-            删除所选（{selected.size}）
-          </Button>
+          <>
+            {/*
+              批量分配：选中若干号，一次归到某个分组（或摘回待分配）。
+
+              放在删除旁边但不合并：分配是**高频操作**（导入后第一件事），
+              删除是低频破坏性操作，放同一个下拉里会让误触风险翻倍。
+            */}
+            <Select
+              value="__assign__"
+              onValueChange={(next) => {
+                if (next !== "__assign__") {
+                  void assignMany([...selected], next === "__unassign__" ? "" : next);
+                }
+              }}
+            >
+              <SelectTrigger
+                aria-label="批量分配分组"
+                className="h-9 w-52"
+                disabled={busy === "assign"}
+              >
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="__assign__">
+                  分配到分组（{selected.size} 个账号）…
+                </SelectItem>
+                <SelectItem value="__unassign__">解除分配（回到待分配）</SelectItem>
+                {channels.filter((channel) => channel.enabled && accounts.filter((account) => selected.has(String(account.id))).every((account) => accountMatchesChannel(account, channel))).map((channel) => (
+                  <SelectItem key={channel.id} value={channel.id}>
+                    {channel.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setBulkDeleteOpen(true)}
+              disabled={busy === "delete"}
+              className="text-destructive hover:bg-destructive/10 hover:text-destructive"
+            >
+              <Trash2 aria-hidden="true" />
+              删除所选（{selected.size}）
+            </Button>
+          </>
         ) : null}
 
         <div className="ml-auto flex items-center gap-2">
+          {/*
+            刷新积分：强制打一次上游的额度接口（与读内存快照的「刷新」分开）。
+
+            常驻巡检 5 分钟才更新一次快照，"刚做完任务积分怎么没变"
+            就点这个。页面停留期间每 30s 也会自动刷一次。
+          */}
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => void refreshQuotas()}
+            disabled={quotaPending}
+          >
+            <Coins
+              className={cn(quotaPending && "animate-pulse motion-reduce:animate-none")}
+              aria-hidden="true"
+            />
+            {quotaPending ? "刷新中..." : "刷新积分"}
+          </Button>
           <Button
             variant="outline"
             size="sm"
@@ -511,6 +793,27 @@ export const AccountsPage = () => {
         }}
       />
 
+      {/*
+        测试弹窗：先选模型再发请求。
+
+        上游限流按模型生效，直接测"默认模型"可能恰好撞在被限流的那个上，
+        得出"号废了"的错误结论。测完刷新一次，让状态列与模型列跟上运行态。
+      */}
+      <ProbeDialog
+        account={probing}
+        onClose={() => {
+          setProbing(null);
+          setReloadKey((value) => value + 1);
+        }}
+      />
+
+      {/* 模型清单：只读，不消耗额度，所以关闭时不必刷新。 */}
+      <ModelListDialog
+        account={modelTarget}
+        catalog={catalogModels}
+        onClose={() => setModelTarget(null)}
+      />
+
       <Dialog
         open={deleteTarget !== null}
         onOpenChange={(next) => !next && setDeleteTarget(null)}
@@ -575,7 +878,7 @@ export const AccountsPage = () => {
 };
 
 /**
- * 在飞：`inflight / maxInflight`。
+ * 并发：当前请求数 / 网关生效上限。
  *
  * 上限只能取 `runtime.maxInflight`（网关已把库里的 NULL 解析成渠道默认值）。
  * 用 `account.maxInflight` 会把 NULL 渲染成 `∞`，那是在说"不限并发"——
@@ -596,161 +899,5 @@ const CapacityCell = ({ account }: { account: Account }) => {
 
   const tone: StatusTone = current >= max ? "danger" : current > 0 ? "warning" : "neutral";
 
-  return <StatusBadge tone={tone} label={`${current}/${max}`} dot={false} />;
-};
-
-/** 「直连」在下拉里的哨兵值（不能用空串：Radix Select 不接受空值项）。 */
-const DIRECT = "__direct__";
-
-/** 编辑账号：昵称 / 启用 / 并发上限 / 出站代理。 */
-const EditAccountDialog = ({
-  account,
-  channels,
-  proxies,
-  onClose,
-  onDone,
-}: {
-  account: Account | null;
-  channels: Channel[];
-  proxies: Proxy[];
-  onClose: () => void;
-  onDone: () => void;
-}) => {
-  const [nickname, setNickname] = useState("");
-  const [enabled, setEnabled] = useState(true);
-  const [maxInflight, setMaxInflight] = useState("");
-  const [proxyId, setProxyId] = useState<number | null>(null);
-  const [pending, setPending] = useState(false);
-  const [error, setError] = useState("");
-
-  useEffect(() => {
-    if (account) {
-      setNickname(account.nickname);
-      setEnabled(account.enabled);
-      setMaxInflight(account.maxInflight === null ? "" : String(account.maxInflight));
-      setProxyId(account.proxyId);
-      setError("");
-    }
-  }, [account]);
-
-  const submit = async () => {
-    if (!account) {
-      return;
-    }
-    setPending(true);
-    setError("");
-    try {
-      await updateAccount(account.id, {
-        nickname: nickname.trim(),
-        enabled,
-        maxInflight: maxInflight.trim() ? Number(maxInflight) : null,
-      });
-      // 代理走独立接口（它不在账号 PATCH 的字段里）：
-      // 变更后网关要重载该账号的出站客户端，所以单独一次调用。
-      if (proxyId !== account.proxyId) {
-        await setAccountProxy(account.id, proxyId);
-      }
-      onDone();
-    } catch (requestError) {
-      setError(getRequestErrorMessage(requestError));
-    } finally {
-      setPending(false);
-    }
-  };
-
-  return (
-    <Dialog open={account !== null} onOpenChange={(next) => !next && onClose()}>
-      <DialogContent className="max-w-sm">
-        <DialogHeader>
-          <DialogTitle>编辑账号</DialogTitle>
-          <DialogDescription>
-            {account
-              ? `${platformLabel(account.platform)} · ${
-                  channels.find((c) => c.id === account.channelId)?.name ?? account.channelId
-                }`
-              : ""}
-          </DialogDescription>
-        </DialogHeader>
-
-        <div className="flex flex-col gap-3">
-          <div className="flex flex-col gap-1">
-            <label className="text-xs font-medium">昵称</label>
-            <input
-              value={nickname}
-              onChange={(event) => setNickname(event.target.value)}
-              className={inputClass}
-            />
-          </div>
-          <div className="flex flex-col gap-1">
-            <label className="text-xs font-medium">状态</label>
-            <Select
-              value={enabled ? "on" : "off"}
-              onValueChange={(next) => setEnabled(next === "on")}
-            >
-              <SelectTrigger aria-label="状态">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="on">启用</SelectItem>
-                <SelectItem value="off">停用（不参与调度）</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-          <div className="flex flex-col gap-1">
-            <label className="text-xs font-medium">并发上限</label>
-            <input
-              value={maxInflight}
-              onChange={(event) => setMaxInflight(event.target.value)}
-              inputMode="numeric"
-              placeholder="留空 = 用渠道默认"
-              className={cn(inputClass, "tabular-nums")}
-            />
-          </div>
-
-          {/*
-            出站代理：每个账号单独选。
-            这是"把出口 IP 摊开"的关键 —— 上游按 IP 限流，
-            所有号共用一个 IP 时几十个号会叠在一起被判异常。
-          */}
-          <div className="flex flex-col gap-1">
-            <label className="text-xs font-medium">出站代理</label>
-            <Select
-              value={proxyId === null ? DIRECT : String(proxyId)}
-              onValueChange={(next) =>
-                setProxyId(next === DIRECT ? null : Number(next))
-              }
-            >
-              <SelectTrigger aria-label="出站代理">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value={DIRECT}>直连（用服务器出口 IP）</SelectItem>
-                {proxies.map((proxy) => (
-                  <SelectItem key={proxy.id} value={String(proxy.id)}>
-                    {proxy.name} · {proxy.protocol}://{proxy.host}:{proxy.port}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            {proxies.length === 0 ? (
-              <p className="text-[11px] text-muted-foreground">
-                还没有代理。去「系统 → 代理」建一个，再回来绑定。
-              </p>
-            ) : null}
-          </div>
-
-          {error ? <ErrorState title="保存失败" message={error} /> : null}
-        </div>
-
-        <DialogFooter>
-          <Button variant="outline" size="sm" onClick={onClose}>
-            取消
-          </Button>
-          <Button size="sm" onClick={() => void submit()} disabled={pending}>
-            {pending ? "保存中..." : "保存"}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
-  );
+  return <span title={`当前请求 ${current} 个 / 生效并发上限 ${max} 个`}><StatusBadge tone={tone} label={`${current}/${max}`} dot={false} /></span>;
 };

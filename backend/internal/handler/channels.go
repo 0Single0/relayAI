@@ -43,6 +43,10 @@ func registerChannels(mux *http.ServeMux, ctx *svc.ServiceContext) {
 			httpx.Fail(w, http.StatusBadRequest, "渠道 id、名称与类型都不能为空")
 			return
 		}
+		if len(input.ModelAllow) > 0 {
+			httpx.Fail(w, http.StatusBadRequest, "请先为分组添加账号，再配置对外模型")
+			return
+		}
 
 		channel, err := ctx.Store.CreateChannel(r.Context(), input)
 		if err != nil {
@@ -61,6 +65,24 @@ func registerChannels(mux *http.ServeMux, ctx *svc.ServiceContext) {
 		if err := httpx.Decode(r, &input); err != nil {
 			httpx.Fail(w, http.StatusBadRequest, err.Error())
 			return
+		}
+		if len(input.ModelAllow) > 0 {
+			models, err := ctx.Gateway.GetChannelModels(r.Context(), r.PathValue("id"))
+			if err != nil {
+				httpx.FailError(w, r, err)
+				return
+			}
+			supported := map[string]bool{}
+			for _, model := range models {
+				supported[model.ID] = true
+			}
+			input.ModelAllow = cleanModelIDs(input.ModelAllow)
+			for _, model := range input.ModelAllow {
+				if !supported[model] {
+					httpx.Fail(w, http.StatusBadRequest, "对外模型必须由本分组的已启用账号支持："+model)
+					return
+				}
+			}
 		}
 
 		channel, err := ctx.Store.UpdateChannel(r.Context(), r.PathValue("id"), input)
@@ -97,6 +119,15 @@ func registerChannels(mux *http.ServeMux, ctx *svc.ServiceContext) {
 
 	// 模型目录：代理到网关。
 	mux.HandleFunc("GET /channels/{id}/models", func(w http.ResponseWriter, r *http.Request) {
+		channel, err := ctx.Store.GetChannel(r.Context(), r.PathValue("id"))
+		if err != nil {
+			httpx.FailError(w, r, err)
+			return
+		}
+		if channel.AccountCount == 0 {
+			httpx.OK(w, []any{})
+			return
+		}
 		models, err := ctx.Gateway.GetChannelModels(r.Context(), r.PathValue("id"))
 		if err != nil {
 			httpx.FailError(w, r, err)

@@ -63,11 +63,11 @@ func (s *Store) ListProxies(ctx context.Context) ([]Proxy, error) {
 		GROUP BY p.id
 		ORDER BY p.name`
 
-	rows, err := s.pool.Query(ctx, query)
+	rows, err := s.db.WithContext(ctx).Raw(query).Rows()
 	if err != nil {
 		return nil, fmt.Errorf("查询代理失败: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	list := make([]Proxy, 0, 8)
 	for rows.Next() {
@@ -110,10 +110,10 @@ func (s *Store) CreateProxy(ctx context.Context, input ProxyInput) (*Proxy, erro
 		RETURNING id`
 
 	var id int64
-	err := s.pool.QueryRow(ctx, query,
+	err := s.queryOne(ctx, &id, query,
 		input.Name, input.Protocol, input.Host, input.Port,
 		input.Username, password, fallbackOr(input.Fallback), enabled, input.Note,
-	).Scan(&id)
+	)
 	if err != nil {
 		// `proxies_by_endpoint` 唯一索引冲突：翻译成人话，而不是把约束名抛给用户。
 		var pgErr *pgconn.PgError
@@ -148,7 +148,7 @@ func (s *Store) UpdateProxy(ctx context.Context, id int64, input ProxyInput) (*P
 		    updated_at = now()
 		WHERE id = $1`
 
-	result, err := s.pool.Exec(ctx, query,
+	affected, err := s.exec(ctx, query,
 		id, input.Name, input.Protocol, input.Host, input.Port,
 		input.Username, input.PasswordEnc, fallbackOr(input.Fallback),
 		input.Enabled, input.Note,
@@ -160,7 +160,7 @@ func (s *Store) UpdateProxy(ctx context.Context, id int64, input ProxyInput) (*P
 		}
 		return nil, fmt.Errorf("更新代理失败: %w", err)
 	}
-	if result.RowsAffected() == 0 {
+	if affected == 0 {
 		return nil, ErrNotFound
 	}
 
@@ -169,11 +169,11 @@ func (s *Store) UpdateProxy(ctx context.Context, id int64, input ProxyInput) (*P
 
 // DeleteProxy 删除代理。绑定它的账号会被置空（走直连），不级联删账号。
 func (s *Store) DeleteProxy(ctx context.Context, id int64) error {
-	result, err := s.pool.Exec(ctx, "DELETE FROM proxies WHERE id = $1", id)
+	affected, err := s.exec(ctx, "DELETE FROM proxies WHERE id = $1", id)
 	if err != nil {
 		return fmt.Errorf("删除代理失败: %w", err)
 	}
-	if result.RowsAffected() == 0 {
+	if affected == 0 {
 		return ErrNotFound
 	}
 	return nil
@@ -195,11 +195,11 @@ func (s *Store) GetProxy(ctx context.Context, id int64) (*Proxy, error) {
 
 // SetAccountProxy 给账号绑定/解绑代理（proxyID 为 nil 表示解绑）。
 func (s *Store) SetAccountProxy(ctx context.Context, accountID int64, proxyID *int64) error {
-	result, err := s.pool.Exec(ctx, "UPDATE accounts SET proxy_id = $2 WHERE id = $1", accountID, proxyID)
+	affected, err := s.exec(ctx, "UPDATE accounts SET proxy_id = $2 WHERE id = $1", accountID, proxyID)
 	if err != nil {
 		return fmt.Errorf("绑定代理失败: %w", err)
 	}
-	if result.RowsAffected() == 0 {
+	if affected == 0 {
 		return ErrNotFound
 	}
 	return nil

@@ -24,7 +24,7 @@ export const CostBreakdown = ({ log }: { log: UsageLog }) => {
   if (!snapshot) {
     return (
       <span className="group relative inline-flex items-center gap-1">
-        <span className="tabular-nums text-xs font-medium">${log.billedCost.toFixed(6)}</span>
+        <span className="tabular-nums text-[13px] font-medium">${log.billedCost.toFixed(6)}</span>
         <Info className="size-3 text-muted-foreground" aria-hidden="true" />
         <span
           role="tooltip"
@@ -50,7 +50,7 @@ export const CostBreakdown = ({ log }: { log: UsageLog }) => {
 
   return (
     <span className="group relative inline-flex items-center gap-1">
-      <span className="tabular-nums text-xs font-medium">${log.billedCost.toFixed(6)}</span>
+      <span className="tabular-nums text-[13px] font-medium">${log.billedCost.toFixed(6)}</span>
       <Info className="size-3 text-muted-foreground" aria-hidden="true" />
       <div
         role="tooltip"

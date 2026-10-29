@@ -1,0 +1,14 @@
+Name: relayai-backend-api
+Host: 0.0.0.0
+Port: 8888
+Mode: pro
+Log:
+  Mode: console
+  Level: info
+Database:
+  MaxConns: 16
+  MinConns: 2
+  AutoMigrate: true
+Gateway:
+  BaseURL: http://gateway:18788
+  TimeoutMs: 15000

@@ -343,7 +343,6 @@ impl PoolAccount {
         ) {
             *target = source.clone();
         }
-        self.max_inflight.store(previous.max_inflight(), Ordering::SeqCst);
         if let Some(quota) = previous.quota() {
             self.set_quota(Some(quota));
         }
@@ -416,7 +415,13 @@ impl PoolAccount {
     /// `model` 用于检查**模型级**冷却：上游限流常常只针对单个模型，
     /// 不传就会漏掉最常见的那种"用不了"。
     /// 可用时返回空 —— 不给用户看无意义的信息。
-    pub fn blocked_reasons(&self, model: &str, now: u64) -> Vec<String> {
+    /// 账号整体不可用的原因。
+    ///
+    /// **不含模型级限流** —— 那是"某个模型在等"，号本身可用，
+    /// 由 `model_cooldowns_snapshot()` 单独表达。
+    ///
+    /// `model` 保留在签名里是为了兼容既有调用点；当前实现不再按模型过滤。
+    pub fn blocked_reasons(&self, _model: &str, now: u64) -> Vec<String> {
         let mut reasons = Vec::new();
         if !self.enabled {
             reasons.push("已停用：不会参与调度".to_string());
@@ -442,18 +447,14 @@ impl PoolAccount {
                 humanize(until - now)
             ));
         }
-        let cooldowns = self.model_cooldowns();
-        let mut limited: Vec<(&String, &u64)> = cooldowns
-            .iter()
-            .filter(|(name, until)| **until > now && (model.is_empty() || *name == model))
-            .collect();
-        limited.sort_by(|a, b| a.1.cmp(b.1));
-        for (name, until) in limited {
-            reasons.push(format!(
-                "模型 {name} 被上游限流，{} 后恢复（同账号其他模型不受影响）",
-                humanize(*until - now)
-            ));
-        }
+        /*
+          模型级限流**不再塞进这里**。
+
+          这个列表的语义是"账号整体不可用"，后端据此把 status 算成 `cooldown`。
+          模型级限流只是"某个模型在等"，号本身照常服务其他模型 ——
+          混进来会让整号显示成冷却中，用户以为号废了去删号重建。
+          模型级走 `model_cooldowns_snapshot()`，由界面单独一列展示。
+        */
         reasons
     }
 
@@ -478,6 +479,57 @@ impl PoolAccount {
             .load(Ordering::SeqCst)
             .max(self.runtime.balance_until.load(Ordering::SeqCst))
             .max(self.runtime.breaker_until.load(Ordering::SeqCst))
+    }
+
+    /// 模型级冷却快照：(上游模型名, 恢复时刻 ms)。
+    ///
+    /// 为什么要暴露：上游按**模型**限额是常态（WorkBuddy 会返回 6004）。
+    /// 这时账号本身还能跑别的模型，但管理面若只看到"账号不可用"，
+    /// 用户会误以为号废了，去删号重建 —— 那才真的丢了配置。
+    ///
+    /// 只返回**尚未恢复**的项：已经过期的对读者没有意义，
+    /// 让界面自己再过滤一遍只会两边口径不一致。
+    pub fn model_cooldowns_snapshot(&self, now: u64) -> Vec<(String, u64)> {
+        let mut list: Vec<(String, u64)> = self
+            .model_cooldowns()
+            .iter()
+            .filter(|(_, until)| **until > now)
+            .map(|(model, until)| (model.clone(), *until))
+            .collect();
+        // 稳定顺序：HashMap 迭代顺序随机，界面每次刷新都换序会闪。
+        list.sort_by(|left, right| left.0.cmp(&right.0));
+        list
+    }
+
+    /// 清掉全部冷却（手动重置用）。
+    ///
+    /// 为什么需要手动重置：上游恢复得比退避策略早时，
+    /// 自动等待会让号白闲着。管理员看到"其实已经能用"就该能立刻放行。
+    /// 一次性清三类 + 模型级，返回是否真的清掉了东西（供接口回报）。
+    pub fn reset_cooldowns(&self) -> bool {
+        let now = crate::gateway::timeutil::now_ms();
+        let had_account = self.cooldown_until_ms() > now;
+
+        self.runtime.cooldown_until.store(0, Ordering::SeqCst);
+        self.runtime.balance_until.store(0, Ordering::SeqCst);
+        self.runtime.breaker_until.store(0, Ordering::SeqCst);
+
+        let had_models = {
+            let mut limits = self
+                .runtime
+                .model_cooldowns
+                .write()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let had = !limits.is_empty();
+            limits.clear();
+            had
+        };
+        // 退避计数也要清：只清时刻、留着连击数，下次限流会立刻跳到很长的退避。
+        if let Ok(mut streaks) = self.runtime.model_streaks.write() {
+            streaks.clear();
+        }
+
+        had_account || had_models
     }
 
     pub fn inflight(&self) -> u32 {
@@ -733,10 +785,25 @@ mod tests {
         assert!(!account.is_ready("deepseek-v4.1-flash", now), "被限的模型不可用");
         assert!(account.is_ready("glm-5.3", now), "同账号其他模型照常可用");
         assert_eq!(account.cooldown_until_ms(), 0, "不该把整个账号拉黑");
-        let reasons = account.blocked_reasons("", now);
+
+        /*
+          面板仍要能看到"哪个模型被限"，但**换了一个出口**。
+
+          早先它塞在 `blocked_reasons` 里 —— 那个列表的语义是
+          "账号整体不可用"，后端据此把 status 算成 `cooldown`，
+          于是整号显示成冷却中。现在改由 `model_cooldowns_snapshot()` 提供，
+          界面用单独一列展示。
+        */
         assert!(
-            reasons.iter().any(|reason| reason.contains("deepseek-v4.1-flash")),
-            "面板要能看到是哪个模型被限：{reasons:?}"
+            account.blocked_reasons("", now).is_empty(),
+            "模型级限流不该进账号级阻断原因"
+        );
+        let limits = account.model_cooldowns_snapshot(now);
+        assert!(
+            limits
+                .iter()
+                .any(|(model, _)| model == "deepseek-v4.1-flash"),
+            "面板要能从快照里看到是哪个模型被限：{limits:?}"
         );
     }
 
@@ -864,4 +931,83 @@ mod tests {
         assert_eq!(backoff_secs(600, 3, 7200), 4800);
         assert_eq!(backoff_secs(600, 10, 7200), 7200);
     }
-}
+
+    /// 模型级限流**不能**把账号标成"不可用"。
+    ///
+    /// 这是曾经的 bug：`blocked_reasons` 把模型级也塞进去，
+    /// 后端看到列表非空就把 status 算成 `cooldown` ——
+    /// 界面显示"冷却中"，用户以为号废了去删号重建。
+    /// 而真相是号照常服务其他模型。
+    #[test]
+    fn model_limit_does_not_block_account() {
+        let mut item = PoolAccount::new("wb", "u1");
+        item.requires_credential = false;
+        let handle = Arc::new(item);
+        let now = now_ms();
+
+        // 模拟 6004：模型级限流。
+        let error = GatewayError::new(
+            ErrorKind::RateLimited,
+            ErrorScope::AccountModel("glm-5.3".into()),
+            429,
+            "该模型被上游限流",
+            true,
+        )
+        .with_reset_at(Some(now + 600_000));
+        handle.apply_error(&error, &CooldownConfig::default(), now);
+
+        // 账号整体仍然可用。
+        assert!(
+            handle.is_ready("glm-5.3", now) == false,
+            "被限流的那个模型当然不可用"
+        );
+        assert!(
+            handle.is_ready("deepseek-v4.1-flash", now),
+            "同账号的其他模型必须照常可用"
+        );
+        assert!(
+            handle.blocked_reasons("", now).is_empty(),
+            "模型级限流不该出现在账号级阻断原因里"
+        );
+
+        // 但明细要能查到，界面靠它渲染「模型」列。
+        let limits = handle.model_cooldowns_snapshot(now);
+        assert!(
+            limits.iter().any(|(model, _)| model == "glm-5.3"),
+            "模型级限流应能在快照里查到：{limits:?}"
+        );
+    }
+
+    /// 重置要能一次清掉账号级与模型级。
+    #[test]
+    fn reset_clears_both_levels() {
+        let mut item = PoolAccount::new("wb", "u2");
+        item.requires_credential = false;
+        let handle = Arc::new(item);
+        let now = now_ms();
+
+        // 账号级冷却。
+        let auth = GatewayError::new(
+            ErrorKind::AuthExpired,
+            ErrorScope::Account,
+            401,
+            "凭据过期",
+            false,
+        );
+        handle.apply_error(&auth, &CooldownConfig::default(), now);
+        // 模型级限流。
+        let model = GatewayError::new(
+            ErrorKind::RateLimited,
+            ErrorScope::AccountModel("glm-5.3".into()),
+            429,
+            "该模型被上游限流",
+            true,
+        )
+        .with_reset_at(Some(now + 600_000));
+        handle.apply_error(&model, &CooldownConfig::default(), now);
+
+        assert!(handle.reset_cooldowns(), "应当报告清掉了东西");
+        assert!(handle.is_ready("glm-5.3", now), "重置后所有模型都应可用");
+        assert!(handle.model_cooldowns_snapshot(now).is_empty());
+        assert!(!handle.reset_cooldowns(), "第二次应报告没有可清的");
+    }}

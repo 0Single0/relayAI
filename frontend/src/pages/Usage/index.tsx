@@ -223,13 +223,13 @@ export const UsagePage = () => {
       render: (log) =>
         log.keyName ? (
           <span
-            className="inline-flex max-w-full items-center rounded bg-accent px-1.5 py-0.5 text-sm text-accent-foreground"
+            className="inline-flex max-w-full items-center rounded bg-accent px-1.5 py-0.5 text-[13px] text-accent-foreground"
             title={log.keyName}
           >
             <span className="truncate">{log.keyName}</span>
           </span>
         ) : (
-          <span className="text-sm text-muted-foreground">—</span>
+          <span className="text-[13px] text-muted-foreground">—</span>
         ),
     },
     {
@@ -241,9 +241,9 @@ export const UsagePage = () => {
       width: "196px",
       render: (log) =>
         log.isRejection ? (
-          <span className="text-sm text-muted-foreground">—</span>
+          <span className="text-[13px] text-muted-foreground">—</span>
         ) : (
-          <span className="block truncate font-mono text-sm font-medium text-primary" title={log.model}>
+          <span className="block truncate font-mono text-[13px] font-medium text-primary" title={log.model}>
             {log.model}
           </span>
         ),
@@ -257,10 +257,10 @@ export const UsagePage = () => {
         // 未调度的行没有真正打到上游，端点信息对排查没有价值，
         // 显示成「—」比显示一个"看起来成功的入站地址"更诚实。
         log.isRejection ? (
-          <span className="text-sm text-muted-foreground">—</span>
+          <span className="text-[13px] text-muted-foreground">—</span>
         ) : (
           <span
-            className="block truncate font-mono text-sm text-muted-foreground"
+            className="block truncate font-mono text-[13px] text-muted-foreground"
             title={protocolLabel(log.protocol)}
           >
             {protocolLabel(log.protocol)}
@@ -272,7 +272,7 @@ export const UsagePage = () => {
       header: "分组",
       width: "96px",
       render: (log) => (
-        <span className="inline-flex max-w-full items-center rounded bg-muted px-1.5 py-0.5 font-mono text-sm text-muted-foreground">
+        <span className="inline-flex max-w-full items-center rounded bg-muted px-1.5 py-0.5 font-mono text-[13px] text-muted-foreground">
           <span className="truncate">{log.channelId || "—"}</span>
         </span>
       ),
@@ -286,7 +286,7 @@ export const UsagePage = () => {
       render: (log) => (
         <span
           className={cn(
-            "inline-flex items-center rounded px-1.5 py-0.5 text-sm",
+            "inline-flex items-center rounded px-1.5 py-0.5 text-[13px]",
             log.stream
               ? "bg-success/10 text-success"
               : "bg-muted text-muted-foreground",
@@ -313,10 +313,10 @@ export const UsagePage = () => {
       hideOnMobile: true,
       render: (log) => {
         if (log.isRejection) {
-          return <span className="text-sm text-muted-foreground">—</span>;
+          return <span className="text-[13px] text-muted-foreground">—</span>;
         }
         return (
-          <div className="flex flex-col gap-0.5 text-sm leading-4 tabular-nums">
+          <div className="flex flex-col gap-0.5 text-[13px] leading-4 tabular-nums">
             <span className="flex items-center gap-2">
               {/* 输入偏冷、输出偏暖：这两项相加就是总量，靠颜色区分比靠箭头更省神。 */}
               <span className="text-chart-1">
@@ -359,7 +359,7 @@ export const UsagePage = () => {
       hideOnMobile: true,
       render: (log) =>
         log.isRejection ? (
-          <span className="text-sm text-muted-foreground">—</span>
+          <span className="text-[13px] text-muted-foreground">—</span>
         ) : (
           <CostBreakdown log={log} />
         ),
@@ -376,10 +376,10 @@ export const UsagePage = () => {
       hideOnMobile: true,
       render: (log) => {
         if (log.isRejection) {
-          return <span className="text-sm text-muted-foreground">—</span>;
+          return <span className="text-[13px] text-muted-foreground">—</span>;
         }
         return (
-          <div className="flex flex-col gap-0.5 text-sm leading-4 tabular-nums">
+          <div className="flex flex-col gap-0.5 text-[13px] leading-4 tabular-nums">
             <span className="flex items-baseline justify-between gap-2">
               <span className="text-muted-foreground">首字</span>
               {/*
@@ -436,7 +436,7 @@ export const UsagePage = () => {
       width: "112px",
       align: "center",
       render: (log) => (
-        <span className="text-sm text-muted-foreground tabular-nums">
+        <span className="text-[13px] text-muted-foreground tabular-nums">
           {new Date(log.ts).toLocaleString("zh-CN", {
             year: "numeric",
             month: "2-digit",

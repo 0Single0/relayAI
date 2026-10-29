@@ -18,8 +18,10 @@
 //! `decode`（上游 SSE → CIR）。
 
 mod catalog;
+pub use catalog::fetch_models;
 mod decode;
 mod encode;
+mod model_options;
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -200,8 +202,11 @@ impl CustomChannel {
         headers
     }
 
-    fn model_meta(&self, id: &str) -> Option<&UpstreamModel> {
-        self.models.iter().find(|model| model.id == id)
+    fn model_meta(&self, account: &AccountSnapshot, id: &str) -> Option<UpstreamModel> {
+        if let Some(options) = account.options.as_ref().filter(|options| options.get("models").is_some()) {
+            return configured_models(options).into_iter().find(|model| model.id == id);
+        }
+        self.models.iter().find(|model| model.id == id).cloned()
     }
 
     /// 识别藏在 200 SSE 流里的业务错误；命中时把**出站报文结构**一并带进消息。
@@ -360,14 +365,21 @@ impl ChannelAdapter for CustomChannel {
             crate::gateway::security::request_id(&self.id, &account.uid, sequence),
         ));
 
-        let body = match protocol {
-            UpstreamProtocol::OpenAi => build_openai_body(request),
-            UpstreamProtocol::Responses => build_responses_body(request),
+        let metadata = self.model_meta(account, &request.model);
+        let mut outbound = request.clone();
+        if outbound.max_tokens.is_none() {
+            outbound.max_tokens = metadata.as_ref().and_then(|model| model.max_output_tokens);
+        }
+        let mut body = match protocol {
+            UpstreamProtocol::OpenAi => build_openai_body(&outbound),
+            UpstreamProtocol::Responses => build_responses_body(&outbound),
             UpstreamProtocol::Anthropic => {
-                let max_output = self.model_meta(&request.model).and_then(|m| m.max_output_tokens);
-                build_anthropic_body(request, max_output)
+                build_anthropic_body(&outbound, None)
             }
         };
+        if let Some(model) = metadata.as_ref() {
+            model_options::apply_reasoning(&mut body, request, model, protocol);
+        }
         // 记下出站报文的**结构**（不含正文），上游报"参数非法"时能直接指出是谁的问题。
         if let Ok(mut slot) = self.last_shape.lock() {
             *slot = Some(body_shape(&body));
@@ -405,9 +417,12 @@ impl ChannelAdapter for CustomChannel {
     async fn list_models(
         &self,
         _client: &reqwest::Client,
-        _account: &AccountSnapshot,
+        account: &AccountSnapshot,
     ) -> Result<Option<Vec<UpstreamModel>>, GatewayError> {
-        Ok(Some(self.models.clone()))
+        Ok(Some(account.options.as_ref()
+            .filter(|options| options.get("models").is_some())
+            .map(configured_models)
+            .unwrap_or_else(|| self.models.clone())))
     }
 
     /// 静态密钥没有刷新概念；返回 None 让上层保持原凭据。

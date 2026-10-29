@@ -492,6 +492,62 @@ button:disabled,
         transform: none;
     }
 }
+
+/*
+ * 登录 ⇄ 注册的展开 / 收起。
+ *
+ * `height: 0 ⇄ auto` + `interpolate-size: allow-keywords`：
+ * `auto` 从此可插值，块高从 0 平滑长到内容真实高度 —— 不猜上限、
+ * 不用 JS 量高，登录卡（内容驱动的 auto 高度）自然跟着平滑涨落。
+ *
+ * 为什么不用 `grid-template-rows: 0fr ⇄ 1fr`：实测 Chromium 156 上
+ * 过渡一旦启动，fr 插值会被钉死在 0（把 transition 摘掉行高立刻恢复），
+ * 展开态直接渲染成 0 高、字段整个消失。
+ *
+ * 为什么不用 `max-height`：它得先猜一个上限，缓动会被「上限」和
+ * 「实际高度」两个数掰弯 —— 矮块前快后慢、高块慢半拍；上限猜小了
+ * 裁内容，猜大了收起后仍留一截空白。
+ *
+ * 兼容性：`interpolate-size` 是 Chromium 129+。不支持的浏览器里
+ * `0 ⇄ auto` 不可插值，表现为瞬间切换 —— 布局正确，只是没有动画，
+ * 属于可接受的渐进增强。缓动与入场动画（auth-rise）同一条曲线。
+ */
+.auth-collapse {
+    /* 只作用在本组件的选择器上，不动全局尺寸体系。 */
+    interpolate-size: allow-keywords;
+    height: 0;
+    opacity: 0;
+    transition:
+        height 260ms cubic-bezier(0.22, 1, 0.36, 1),
+        opacity 180ms ease-out;
+}
+
+.auth-collapse[data-open="true"] {
+    height: auto;
+    opacity: 1;
+}
+
+/*
+ * 裁剪放在**子层**上：height: 0 时内容会整块露在卡片外面。
+ *
+ * 用 `clip` + `overflow-clip-margin` 而不是 `hidden`：
+ * 字段聚焦时的 4px ring、键盘焦点的 2px outline（2px offset）都画在
+ * border box **外面**，`hidden` 会把它们切在裁剪边上 —— 登录页昵称框
+ * 聚焦时"光圈缺一圈"就是这么来的。`overflow-clip-margin: 8px` 只把
+ * 裁剪边界往外推 8px（足够容纳 4px ring + 4px outline），完全不参与
+ * 布局，所以高度照样能收到 0。收起后整块 opacity 0，这 8px 余量
+ * 也不会露出内容。
+ */
+.auth-collapse > * {
+    overflow: clip;
+    overflow-clip-margin: 8px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .auth-collapse {
+        transition: none;
+    }
+}
 /*
   Toast 入场：自下而上浮 8px。
   没引 tailwindcss-animate —— 一条 keyframes 就够，不值得多一个依赖。

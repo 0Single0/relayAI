@@ -64,6 +64,7 @@ pub struct ModelLimits {
 #[derive(Debug, Clone, Default, serde::Serialize)]
 pub struct ModelRoute {
     pub public_model: String,
+    pub display_name: Option<String>,
     pub channel_id: String,
     /// 上游真实模型名（可能与对外名不同）。
     pub upstream_model: String,
@@ -169,6 +170,7 @@ impl Matrix {
                     .or_default()
                     .push(ModelRoute {
                         public_model: model.id.clone(),
+                        display_name: model.display_name.clone(),
                         channel_id: catalog.channel_id.clone(),
                         upstream_model: model.id.clone(),
                         priority: catalog.priority,
@@ -212,13 +214,20 @@ impl Matrix {
 
     /// 解析别名后取出该对外模型的候选渠道（已剔除禁用的）。
     pub fn routes(&self, public_model: &str) -> Vec<ModelRoute> {
+        self.all_routes(public_model)
+            .into_iter()
+            .filter(|route| route.enabled)
+            .collect()
+    }
+
+    /// Management needs supported routes even when publication policy disables them.
+    pub fn all_routes(&self, public_model: &str) -> Vec<ModelRoute> {
         let canonical = self.canonical(public_model);
         self.routes
             .get(&canonical)
             .map(|routes| {
                 routes
                     .iter()
-                    .filter(|route| route.enabled)
                     .cloned()
                     .collect()
             })
@@ -359,6 +368,7 @@ fn apply_overrides(routes: &mut HashMap<String, Vec<ModelRoute>>, overrides: &[R
                 };
                 routes.entry(canonical.clone()).or_default().push(ModelRoute {
                     public_model: canonical.clone(),
+                    display_name: None,
                     channel_id: entry.channel_id.clone(),
                     upstream_model: upstream,
                     priority: entry.priority.unwrap_or(100),
@@ -668,6 +678,8 @@ mod tests {
         let ds = matrix.routes("deepseek-v4.1-flash");
         assert_eq!(ds.len(), 1, "被禁用的渠道候选要消失");
         assert_eq!(ds[0].channel_id, "wb-cn");
+        assert_eq!(matrix.all_routes("deepseek-v4.1-flash").len(), 2,
+            "management must retain supported models when publication is disabled");
 
         let glm = matrix.routes("glm-5.3");
         assert_eq!(glm[0].priority, 7);

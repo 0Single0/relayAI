@@ -164,7 +164,7 @@ func (s *Store) ListUsage(ctx context.Context, query UsageQuery) ([]UsageLog, in
 	}
 
 	var total int
-	if err := s.pool.QueryRow(ctx, "SELECT count(*) FROM usage_logs u "+where, args...).Scan(&total); err != nil {
+	if err := s.db.WithContext(ctx).Raw("SELECT count(*) FROM usage_logs u "+where, args...).Row().Scan(&total); err != nil {
 		return nil, 0, fmt.Errorf("统计使用记录失败: %w", err)
 	}
 
@@ -185,7 +185,7 @@ func (s *Store) ListUsage(ctx context.Context, query UsageQuery) ([]UsageLog, in
 		ORDER BY u.ts DESC, u.id DESC
 		LIMIT $%d OFFSET $%d`, where, len(listArgs)-1, len(listArgs))
 
-	rows, err := s.pool.Query(ctx, listQuery, listArgs...)
+	rows, err := s.db.WithContext(ctx).Raw(listQuery, listArgs...).Rows()
 	if err != nil {
 		return nil, 0, fmt.Errorf("查询使用记录失败: %w", err)
 	}
@@ -236,7 +236,7 @@ func (s *Store) GetUsage(ctx context.Context, id int64) (*UsageLog, error) {
 	var log UsageLog
 	var ts any
 	var snapInput, snapOutput, snapCache, snapModelRatio, snapChannelRatio *float64
-	err := s.pool.QueryRow(ctx, query, id).Scan(
+	err := s.db.WithContext(ctx).Raw(query, id).Row().Scan(
 		&log.ID, &ts, &log.RequestID, &log.KeyID, &log.KeyName,
 		&log.ChannelID, &log.AccountUID, &log.Protocol, &log.Model, &log.UpstreamModel,
 		&log.Stream, &log.Status, &log.IsRejection, &log.Attempts,
@@ -330,7 +330,7 @@ func (s *Store) GetUsageSummary(ctx context.Context, query SummaryQuery) (*Usage
 
 	var summary UsageSummary
 	var avgTTFT *float64
-	err := s.pool.QueryRow(ctx, fmt.Sprintf(`
+	err := s.db.WithContext(ctx).Raw(fmt.Sprintf(`
 		SELECT count(*),
 		       COALESCE(avg(CASE WHEN status = 'completed' THEN 1.0 ELSE 0.0 END), 0),
 		       COALESCE(sum(prompt_tokens), 0),
@@ -341,7 +341,7 @@ func (s *Store) GetUsageSummary(ctx context.Context, query SummaryQuery) (*Usage
 		       COALESCE(sum(billed_cost), 0)::float8,
 		       avg(ttft_ms)::float8
 		FROM usage_logs %s`, where), args...,
-	).Scan(
+	).Row().Scan(
 		&summary.Requests, &summary.SuccessRate,
 		&summary.PromptTokens, &summary.CompletionTokens, &summary.TotalTokens,
 		&summary.CachedTokens, &summary.UpstreamCost, &summary.BilledCost,
@@ -372,11 +372,11 @@ func (s *Store) GetUsageSummary(ctx context.Context, query SummaryQuery) (*Usage
 		ORDER BY 2 DESC
 		LIMIT 50`, column, where)
 
-	rows, err := s.pool.Query(ctx, bucketQuery, args...)
+	rows, err := s.queryRows(ctx, bucketQuery, args...)
 	if err != nil {
 		return nil, nil, fmt.Errorf("分组统计失败: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	buckets := make([]SummaryBucket, 0, 16)
 	for rows.Next() {
@@ -466,7 +466,7 @@ func (s *Store) GetUsageSeries(ctx context.Context, query SeriesQuery) ([]Summar
 		GROUP BY 1
 		ORDER BY 1`, unit, where)
 
-	rows, err := s.pool.Query(ctx, sql, args...)
+	rows, err := s.db.WithContext(ctx).Raw(sql, args...).Rows()
 	if err != nil {
 		return nil, fmt.Errorf("查询趋势失败: %w", err)
 	}
@@ -561,7 +561,7 @@ type Settings struct {
 
 // GetSettings 读设置（缺失的键用默认值补齐）。
 func (s *Store) GetSettings(ctx context.Context) (*Settings, error) {
-	rows, err := s.pool.Query(ctx, "SELECT key, value FROM settings")
+	rows, err := s.db.WithContext(ctx).Raw("SELECT key, value FROM settings").Rows()
 	if err != nil {
 		return nil, fmt.Errorf("读取设置失败: %w", err)
 	}
@@ -631,7 +631,7 @@ func (s *Store) SaveSettings(ctx context.Context, settings *Settings) error {
 		if err != nil {
 			return fmt.Errorf("序列化设置 %s 失败: %w", key, err)
 		}
-		if _, err := s.pool.Exec(ctx,
+		if _, err := s.exec(ctx,
 			`INSERT INTO settings (key, value, updated_at) VALUES ($1, $2, now())
 			 ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`,
 			key, payload,

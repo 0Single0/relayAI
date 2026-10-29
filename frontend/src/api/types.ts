@@ -1,4 +1,5 @@
 /** 管理面共享类型，与 docs/SPEC.md 第 7 节 API 契约一一对应。 */
+import type { CustomModelDefinition } from "./accounts/models";
 
 export type PageResult<T> = {
   list: T[];
@@ -43,8 +44,7 @@ export type Channel = {
   /**
    * 该渠道名下账号出现过的**平台**集合（去重）。
    *
-   * 渠道是计价分组，一个分组下可以混不同平台的号（WorkBuddy + 自定义供应商）。
-   * 所以界面不该显示"渠道类型"，而要显示"这个分组里有哪些平台"。
+   * 正常情况下仅包含分组绑定的平台；保留数组以展示已有账号的实际平台。
    */
   platforms: string[];
 };
@@ -56,6 +56,9 @@ export type Account = {
   adapter: ChannelAdapter;
   /** 上游平台（决定用哪个适配器）。 */
   platform: string;
+  baseUrl?: string;
+  protocol?: string;
+  options?: ChannelOptions & { models?: Array<string | CustomModelDefinition> };
   uid: string;
   nickname: string;
   enabled: boolean;
@@ -94,6 +97,14 @@ export type AccountUsage = {
 export type AccountRuntime = {
   status: "ready" | "cooldown" | "no_credential" | "disabled" | "unknown";
   cooldownUntil: string | null;
+  /**
+   * 模型级限流明细（上游按模型限额，而不是整号封禁）。
+   *
+   * 与 `cooldownUntil` 的区别必须分清：那个是整号冷却，界面上该显示"不可用"；
+   * 这个是"号还能用，只是某几个模型在等" —— 显示成不可用会让用户
+   * 误以为号废了，去删号重建反而丢了配置。
+   */
+  modelLimits?: Array<{ model: string; untilMs: number }>;
   inflight: number;
   /**
    * 网关的**生效并发上限**（库里 NULL 表示"用渠道默认"，由网关解析成具体值）。

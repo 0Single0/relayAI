@@ -30,29 +30,31 @@ func (s *Store) ListModels(ctx context.Context) ([]Model, error) {
 		       model_ratio::float8, enabled
 		FROM models ORDER BY canonical_name`
 
-	rows, err := s.pool.Query(ctx, query)
-	if err != nil {
+	var rows []modelRow
+	if err := s.queryAll(ctx, &rows, query); err != nil {
 		return nil, fmt.Errorf("查询模型失败: %w", err)
 	}
-	defer rows.Close()
 
-	list := make([]Model, 0, 16)
-	for rows.Next() {
-		var model Model
-		if err := rows.Scan(
-			&model.CanonicalName, &model.DisplayName, &model.ContextWindow, &model.MaxOutput,
-			&model.Capabilities,
-			&model.InputPrice, &model.OutputPrice, &model.CacheReadPrice,
-			&model.ModelRatio, &model.Enabled,
-		); err != nil {
-			return nil, fmt.Errorf("扫描模型失败: %w", err)
+	list := make([]Model, 0, len(rows))
+	for _, row := range rows {
+		model := Model{
+			CanonicalName:  row.CanonicalName,
+			DisplayName:    row.DisplayName,
+			ContextWindow:  row.ContextWindow,
+			MaxOutput:      row.MaxOutput,
+			Capabilities:   rawJSONOrEmpty(row.Capabilities),
+			InputPrice:     row.InputPrice,
+			OutputPrice:    row.OutputPrice,
+			CacheReadPrice: row.CacheReadPrice,
+			ModelRatio:     row.ModelRatio,
+			Enabled:        row.Enabled,
 		}
 		// "已定价"= 至少有一个价格大于 0；全零视为未定价，界面要提示。
 		model.Priced = model.InputPrice > 0 || model.OutputPrice > 0
 		list = append(list, model)
 	}
 
-	return list, rows.Err()
+	return list, nil
 }
 
 // ModelInput 是更新模型的输入。
@@ -96,20 +98,27 @@ func (s *Store) UpdateModel(ctx context.Context, name string, input ModelInput) 
 		          capabilities, input_price::float8, output_price::float8,
 		          cache_read_price::float8, model_ratio::float8, enabled`
 
-	var model Model
-	err := s.pool.QueryRow(ctx, query,
+	var row modelRow
+	if err := s.queryOne(ctx, &row, query,
 		name, input.DisplayName, input.ContextWindow, input.MaxOutput,
 		nullableJSON(input.Capabilities), input.InputPrice, input.OutputPrice,
 		input.CacheReadPrice, input.ModelRatio, input.Enabled,
-	).Scan(
-		&model.CanonicalName, &model.DisplayName, &model.ContextWindow, &model.MaxOutput,
-		&model.Capabilities, &model.InputPrice, &model.OutputPrice,
-		&model.CacheReadPrice, &model.ModelRatio, &model.Enabled,
-	)
-	if err != nil {
+	); err != nil {
 		return nil, fmt.Errorf("更新模型失败: %w", err)
 	}
 
+	model := Model{
+		CanonicalName:  row.CanonicalName,
+		DisplayName:    row.DisplayName,
+		ContextWindow:  row.ContextWindow,
+		MaxOutput:      row.MaxOutput,
+		Capabilities:   rawJSONOrEmpty(row.Capabilities),
+		InputPrice:     row.InputPrice,
+		OutputPrice:    row.OutputPrice,
+		CacheReadPrice: row.CacheReadPrice,
+		ModelRatio:     row.ModelRatio,
+		Enabled:        row.Enabled,
+	}
 	model.Priced = model.InputPrice > 0 || model.OutputPrice > 0
 	return &model, nil
 }

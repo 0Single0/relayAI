@@ -1,10 +1,12 @@
-﻿package store
+package store
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	dbmodels "relayai/backend/internal/models"
 )
 
 // ModelPrice 是一个模型的价格（元 / 百万 token）。
@@ -122,23 +124,12 @@ func (s *Store) ApplyBuiltinPrices(ctx context.Context, usdToCny float64) (int64
 		usdToCny = 7.2
 	}
 
-	rows, err := s.pool.Query(ctx,
-		"SELECT canonical_name FROM models WHERE input_price = 0 OR output_price = 0")
-	if err != nil {
-		return 0, fmt.Errorf("查询未定价模型失败: %w", err)
-	}
-	defer rows.Close()
-
 	var names []string
-	for rows.Next() {
-		var name string
-		if err := rows.Scan(&name); err != nil {
-			return 0, fmt.Errorf("扫描模型名失败: %w", err)
-		}
-		names = append(names, name)
-	}
-	if err := rows.Err(); err != nil {
-		return 0, err
+	if err := s.db.WithContext(ctx).
+		Model(&dbmodels.Models{}).
+		Where("input_price = 0 OR output_price = 0").
+		Pluck("canonical_name", &names).Error; err != nil {
+		return 0, fmt.Errorf("查询未定价模型失败: %w", err)
 	}
 
 	var filled int64
@@ -147,7 +138,7 @@ func (s *Store) ApplyBuiltinPrices(ctx context.Context, usdToCny float64) (int64
 		if !ok {
 			continue
 		}
-		_, err := s.pool.Exec(ctx,
+		_, err := s.exec(ctx,
 			`UPDATE models SET
 			     input_price = $2, output_price = $3, cache_read_price = $4
 			 WHERE canonical_name = $1
@@ -206,22 +197,11 @@ func (s *Store) ApplyOpenRouterPrices(
 		}
 	}
 
-	rows, err := s.pool.Query(ctx, "SELECT canonical_name FROM models")
-	if err != nil {
-		return 0, fmt.Errorf("查询模型失败: %w", err)
-	}
-	defer rows.Close()
-
 	var names []string
-	for rows.Next() {
-		var name string
-		if err := rows.Scan(&name); err != nil {
-			return 0, fmt.Errorf("扫描模型名失败: %w", err)
-		}
-		names = append(names, name)
-	}
-	if err := rows.Err(); err != nil {
-		return 0, err
+	if err := s.db.WithContext(ctx).
+		Model(&dbmodels.Models{}).
+		Pluck("canonical_name", &names).Error; err != nil {
+		return 0, fmt.Errorf("查询模型失败: %w", err)
 	}
 
 	var updated int64
@@ -239,7 +219,7 @@ func (s *Store) ApplyOpenRouterPrices(
 			continue
 		}
 
-		if _, err := s.pool.Exec(ctx,
+		if _, err := s.exec(ctx,
 			`UPDATE models SET
 			     input_price = $2, output_price = $3,
 			     cache_read_price = CASE WHEN $4 > 0 THEN $4 ELSE cache_read_price END
@@ -274,24 +254,24 @@ func parsePerTokenUSD(raw string) float64 {
 // 而"模型 → 价格"是一份**很小的只读映射**，通过内部接口传一次、
 // 网关缓存在内存里更简单，也不影响它现有的加载流程。
 func (s *Store) ModelPricesForGateway(ctx context.Context) (map[string]ModelPrice, error) {
-	rows, err := s.pool.Query(ctx,
-		`SELECT canonical_name, input_price::float8, output_price::float8, cache_read_price::float8
-		 FROM models WHERE input_price > 0 OR output_price > 0`)
-	if err != nil {
+	var rows []struct {
+		Name      string  `gorm:"column:canonical_name"`
+		Input     float64 `gorm:"column:input_price"`
+		Output    float64 `gorm:"column:output_price"`
+		CacheRead float64 `gorm:"column:cache_read_price"`
+	}
+	if err := s.queryAll(ctx, &rows,
+		`SELECT canonical_name, input_price::float8 AS input_price,
+		        output_price::float8 AS output_price, cache_read_price::float8 AS cache_read_price
+		 FROM models WHERE input_price > 0 OR output_price > 0`); err != nil {
 		return nil, fmt.Errorf("查询模型价格失败: %w", err)
 	}
-	defer rows.Close()
 
-	out := make(map[string]ModelPrice, 64)
-	for rows.Next() {
-		var name string
-		var price ModelPrice
-		if err := rows.Scan(&name, &price.Input, &price.Output, &price.CacheRead); err != nil {
-			return nil, fmt.Errorf("扫描模型价格失败: %w", err)
-		}
-		out[name] = price
+	out := make(map[string]ModelPrice, len(rows))
+	for _, row := range rows {
+		out[row.Name] = ModelPrice{Input: row.Input, Output: row.Output, CacheRead: row.CacheRead}
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // 确保 json 被使用（OpenRouterModel 的标签需要它）。

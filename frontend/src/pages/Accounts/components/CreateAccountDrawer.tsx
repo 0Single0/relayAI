@@ -7,7 +7,7 @@ import {
   startLogin,
   type LoginTicket,
 } from "@/api/accounts";
-import { createChannel, listChannels } from "@/api/channels";
+import { listChannels } from "@/api/channels";
 import type { Channel } from "@/api/types";
 import { toast } from "@/components/common/Toast/store";
 import { ErrorState } from "@/components/common/ErrorState";
@@ -30,11 +30,14 @@ import {
 import {
   outboundOptions,
   platformOptions,
-  realmOptions,
+  platformParts,
+  platformFromParts,
   upstreamProtocolOptions,
 } from "@/pages/Channels/shared";
 import { cn } from "@/lib/utils";
 import { getRequestErrorMessage } from "@/utils/request";
+import { CustomModelPicker } from "./CustomModelPicker";
+import { getCustomModelError, serializeCustomModels, type CustomModelDraft } from "./customModels";
 
 type CreateAccountDrawerProps = {
   open: boolean;
@@ -50,17 +53,13 @@ type CreateAccountDrawerProps = {
  * **顺序是"先选平台，再选计价分组"** —— 这是用户脑子里的顺序：
  * "我要加一个 WorkBuddy 号，算到低价通道里"。
  *
- * 平台在账号上（`accounts.platform`），所以：
- *   · 不需要先建一个「WorkBuddy 类型」的渠道；
- *   · 同一个计价分组下面可以混不同平台的号；
- *   · realm / 出站身份 / Base URL / 协议 都跟着这个号走。
+ * 平台与凭据属于账号；分组仅接收相同平台及版本的账号。
  *
  * 两种凭据形态：
  *   1. OAuth 平台（WorkBuddy / Trae）：发起授权，成功后自动建号；
- *   2. 自定义供应商：填 Base URL + 协议 + API Key。
+ *   2. 自定义供应商：填 Base URL + 协议 + API Key，并声明支持模型。
  *
- * 渠道怎么来：选中计价分组后，若还没有任何渠道就顺手建一个默认的 ——
- * 用户只想加个号，不该被迫先想"渠道叫什么"。
+ * 没有相同平台的分组时可以先保存为待分配，不自动创建分组。
  */
 export const CreateAccountDrawer = ({
   open,
@@ -69,19 +68,20 @@ export const CreateAccountDrawer = ({
   defaultChannelId,
 }: CreateAccountDrawerProps) => {
   const [channels, setChannels] = useState<Channel[]>([]);
-  const [platform, setPlatform] = useState("workbuddy");
+  const [platform, setPlatform] = useState("workbuddy-cn");
   const [channelId, setChannelId] = useState(defaultChannelId ?? "");
   const [nickname, setNickname] = useState("");
   const [apiKey, setApiKey] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
   const [protocol, setProtocol] = useState("openai-chat");
-  const [realm, setRealm] = useState("cn");
   const [outbound, setOutbound] = useState("desktop");
   const [pending, setPending] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [ticket, setTicket] = useState<LoginTicket | null>(null);
   const [callback, setCallback] = useState("");
+  const [models, setModels] = useState<CustomModelDraft[]>([]);
+  const [modelsPending, setModelsPending] = useState(false);
 
   const loadChannels = useCallback(async () => {
     try {
@@ -107,15 +107,23 @@ export const CreateAccountDrawer = ({
       setError("");
       setTicket(null);
       setCallback("");
+      setModels([]);
+      setChannelId(defaultChannelId ?? "");
     }
-  }, [open]);
+  }, [defaultChannelId, open]);
 
   useEffect(() => {
     if (defaultChannelId && channels.some((c) => c.id === defaultChannelId)) {
-      return;
+      setChannelId(defaultChannelId);
+      const channel = channels.find((item) => item.id === defaultChannelId)!;
+      setPlatform(platformFromParts(channel.adapter, channel.options?.realm));
     }
-    // 默认落到第一个渠道：多数人只有一个计价分组。
-    setChannelId((current) => current || channels[0]?.id || "");
+    /*
+      不再自动选中第一个分组。
+
+      分组可以为空（号先建好、之后再分配）。自动填第一个会让人
+      在没留意的情况下把号塞进一个不相干的分组里。
+    */
   }, [channels, defaultChannelId]);
 
   const selectedPlatform = useMemo(
@@ -123,35 +131,12 @@ export const CreateAccountDrawer = ({
     [platform],
   );
   const needsOAuth = selectedPlatform?.oauth ?? false;
-  const isWorkbuddy = platform === "workbuddy";
+  // 具体平台已经带版本，这里不再需要单独的 realm 状态。
+  const parts = platformParts(platform);
+  const isWorkbuddy = parts.adapter === "workbuddy";
+  const compatibleChannels = useMemo(() => channels.filter((channel) => channel.enabled &&
+    platformFromParts(channel.adapter, channel.options?.realm) === platformFromParts(parts.adapter, parts.realm)), [channels, parts.adapter, parts.realm]);
 
-  /** 确保有一个可用渠道：有就复用，没有就建一个默认的。 */
-  const ensureChannel = useCallback(async (): Promise<string> => {
-    if (channelId) {
-      return channelId;
-    }
-
-    const response = await createChannel({
-      id: `default-${Date.now().toString(36)}`,
-      name: "默认通道",
-      adapter: "custom",
-      enabled: true,
-      priority: 100,
-      weight: 1,
-      options: {},
-      channelRatio: 1,
-      concurrencyLimit: null,
-      rateLimitQps: null,
-    });
-
-    const created = response.data;
-    if (!created) {
-      throw new Error("渠道创建失败：后端没有返回渠道");
-    }
-    setChannels((prev) => [...prev, created]);
-    setChannelId(created.id);
-    return created.id;
-  }, [channelId]);
 
   const submitApiKey = useCallback(async () => {
     if (!apiKey.trim()) {
@@ -166,11 +151,14 @@ export const CreateAccountDrawer = ({
       setError("上游地址必须以 http:// 或 https:// 开头");
       return;
     }
+    const modelError = getCustomModelError(models);
+    if (modelError) { setError(modelError); return; }
 
     setPending(true);
     setError("");
     try {
-      const target = await ensureChannel();
+      // 分组可以留空：号先建好，之后在账号列表里批量分配。
+      const target = channelId;
       await createCredentialAccount({
         channelId: target,
         // uid 用 Key 前缀 + 时间戳：自定义供应商没有上游账号概念，
@@ -181,23 +169,27 @@ export const CreateAccountDrawer = ({
         platform: "custom",
         baseUrl: baseUrl.trim(),
         protocol,
+        modelAllow: models.map(model => model.id.trim()),
+        options: { models: serializeCustomModels(models) },
       });
       toast.success("账号已添加");
       onCreated();
+      onOpenChange(false);
     } catch (requestError) {
       setError(getRequestErrorMessage(requestError));
     } finally {
       setPending(false);
     }
-  }, [apiKey, baseUrl, ensureChannel, nickname, onCreated, protocol]);
+  }, [apiKey, baseUrl, channelId, models, nickname, onCreated, onOpenChange, protocol]);
 
   const beginLogin = useCallback(async () => {
     setPending(true);
     setError("");
     setTicket(null);
     try {
-      const target = await ensureChannel();
-      const response = await startLogin(target, platform, isWorkbuddy ? realm : undefined);
+      // 分组可以留空：号先建好，之后在账号列表里批量分配。
+      const target = channelId;
+      const response = await startLogin(target, parts.adapter, parts.realm);
       const result = response.data;
       if (!result) {
         setError("后端没有返回登录票据");
@@ -214,7 +206,7 @@ export const CreateAccountDrawer = ({
     } finally {
       setPending(false);
     }
-  }, [ensureChannel, isWorkbuddy, platform, realm]);
+  }, [channelId, parts.adapter, parts.realm]);
 
   /**
    * 自动轮询授权状态。
@@ -230,7 +222,7 @@ export const CreateAccountDrawer = ({
    * 要用户贴回调地址，那种没法自动。
    */
   useEffect(() => {
-    if (!open || !ticket || !channelId || ticket.needsCallback) {
+    if (!open || !ticket || ticket.needsCallback) {
       return;
     }
 
@@ -239,7 +231,7 @@ export const CreateAccountDrawer = ({
 
     const tick = async () => {
       try {
-        const response = await pollLogin(channelId, ticket.state, platform);
+        const response = await pollLogin(channelId, ticket.state, parts.adapter, { realm: parts.realm, outbound_identity: outbound });
         if (cancelled) {
           return;
         }
@@ -270,10 +262,10 @@ export const CreateAccountDrawer = ({
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [channelId, onCreated, onOpenChange, open, platform, ticket]);
+  }, [channelId, onCreated, onOpenChange, open, outbound, parts.adapter, parts.realm, ticket]);
 
   const submitCallback = useCallback(async () => {
-    if (!ticket || !channelId || !callback.trim()) {
+    if (!ticket || !callback.trim()) {
       return;
     }
     setPending(true);
@@ -283,7 +275,8 @@ export const CreateAccountDrawer = ({
         channelId,
         ticket.state,
         callback.trim(),
-        platform,
+        parts.adapter,
+        { realm: parts.realm, outbound_identity: outbound },
       );
       const result = response.data;
       if (result?.state === "ready") {
@@ -299,7 +292,7 @@ export const CreateAccountDrawer = ({
     } finally {
       setPending(false);
     }
-  }, [callback, channelId, onCreated, onOpenChange, platform, ticket]);
+  }, [callback, channelId, onCreated, onOpenChange, outbound, parts.adapter, parts.realm, ticket]);
 
   const inputClass = cn(
     "h-8 w-full rounded-md border border-input bg-background px-2.5 text-sm",
@@ -327,7 +320,8 @@ export const CreateAccountDrawer = ({
                 <button
                   key={item.value}
                   type="button"
-                  onClick={() => setPlatform(item.value)}
+                  disabled={pending || ticket !== null}
+                  onClick={() => { setPlatform(item.value); setChannelId(""); setError(""); }}
                   aria-pressed={platform === item.value}
                   title={item.hint}
                   className={cn(
@@ -350,13 +344,22 @@ export const CreateAccountDrawer = ({
           {/* 计价分组 */}
           <div className="flex flex-col gap-1">
             <span className="text-xs font-medium">计价分组</span>
-            {channels.length > 0 ? (
-              <Select value={channelId} onValueChange={setChannelId}>
+            {/*
+              可选字段：不选 = 号先建好，**待分配**。
+
+              为什么不再强制：建号时常常还没想好归到哪个计价桶
+              （尤其批量导入、授权刚完成）。强制选只会催生
+              "为了建号随便建一个分组"这种更脏的数据。
+              未分配的号不参与调度，之后在账号列表里批量分配即可。
+            */}
+            {compatibleChannels.length > 0 ? (
+              <Select disabled={pending || ticket !== null} value={channelId || "__none__"} onValueChange={(next) => setChannelId(next === "__none__" ? "" : next)}>
                 <SelectTrigger aria-label="选择计价分组">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {channels.map((channel) => (
+                  <SelectItem value="__none__">暂不分配（之后在账号列表里分配）</SelectItem>
+                  {compatibleChannels.map((channel) => (
                     <SelectItem key={channel.id} value={channel.id}>
                       {channel.name}（×{channel.channelRatio.toFixed(2)}）
                     </SelectItem>
@@ -365,7 +368,7 @@ export const CreateAccountDrawer = ({
               </Select>
             ) : (
               <p className="text-[11px] text-muted-foreground">
-                还没有计价分组，提交时会自动建一个「默认通道」。
+                没有相同平台及版本的分组。账号将保存为「待分配」。
               </p>
             )}
           </div>
@@ -393,38 +396,28 @@ export const CreateAccountDrawer = ({
             </div>
           )}
 
+          {/*
+            "区域"下拉已经删掉：版本现在在"平台"里选
+            （WorkBuddy 国内版 / 国际版）。
+
+            两个字段并存时，选了国际版却忘改区域是最常见的错配，
+            而错配的后果是凭据与域名对不上，请求直接 401。
+          */}
           {isWorkbuddy ? (
-            <div className="grid grid-cols-2 gap-3">
-              <div className="flex flex-col gap-1">
-                <span className="text-xs font-medium">区域</span>
-                <Select value={realm} onValueChange={setRealm}>
-                  <SelectTrigger aria-label="区域">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {realmOptions.map((option) => (
-                      <SelectItem key={option.value} value={option.value}>
-                        {option.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="flex flex-col gap-1">
-                <span className="text-xs font-medium">出站身份</span>
-                <Select value={outbound} onValueChange={setOutbound}>
-                  <SelectTrigger aria-label="出站身份">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {outboundOptions.map((option) => (
-                      <SelectItem key={option.value} value={option.value}>
-                        {option.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
+            <div className="flex flex-col gap-1">
+              <span className="text-xs font-medium">出站身份</span>
+              <Select value={outbound} onValueChange={setOutbound}>
+                <SelectTrigger aria-label="出站身份">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {outboundOptions.map((option) => (
+                    <SelectItem key={option.value} value={option.value}>
+                      {option.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
           ) : null}
 
@@ -474,7 +467,7 @@ export const CreateAccountDrawer = ({
                 <span className="text-xs font-medium">上游地址</span>
                 <input
                   value={baseUrl}
-                  onChange={(event) => setBaseUrl(event.target.value)}
+                  onChange={(event) => { setBaseUrl(event.target.value); setModels([]); }}
                   placeholder="https://api.example.com/v1"
                   className={cn(inputClass, "font-mono text-xs")}
                 />
@@ -484,7 +477,7 @@ export const CreateAccountDrawer = ({
               </div>
               <div className="flex flex-col gap-1">
                 <span className="text-xs font-medium">上游协议</span>
-                <Select value={protocol} onValueChange={setProtocol}>
+                <Select value={protocol} onValueChange={(value) => { setProtocol(value); setModels([]); }}>
                   <SelectTrigger aria-label="上游协议">
                     <SelectValue />
                   </SelectTrigger>
@@ -501,7 +494,7 @@ export const CreateAccountDrawer = ({
                 <span className="text-xs font-medium">API Key</span>
                 <input
                   value={apiKey}
-                  onChange={(event) => setApiKey(event.target.value)}
+                  onChange={(event) => { setApiKey(event.target.value); setModels([]); }}
                   type="password"
                   placeholder="sk-..."
                   className={cn(inputClass, "font-mono")}
@@ -510,6 +503,7 @@ export const CreateAccountDrawer = ({
                   加密后存储，明文不会返回给前端。
                 </p>
               </div>
+              <CustomModelPicker baseUrl={baseUrl} apiKey={apiKey} protocol={protocol} value={models} onChange={setModels} disabled={pending} onFetchingChange={setModelsPending} />
             </>
           )}
 
@@ -558,7 +552,7 @@ export const CreateAccountDrawer = ({
             <Button
               size="sm"
               onClick={() => void submitApiKey()}
-              disabled={pending || !apiKey.trim()}
+              disabled={pending || modelsPending || !apiKey.trim() || models.length === 0}
             >
               {pending ? (
                 <Loader2 className="animate-spin motion-reduce:animate-none" aria-hidden="true" />

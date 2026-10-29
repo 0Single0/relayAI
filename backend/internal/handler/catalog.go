@@ -58,13 +58,7 @@ func registerCatalog(mux *http.ServeMux, ctx *svc.ServiceContext) {
 			return
 		}
 
-		// 网关目录里带「模型 → 渠道」路由，用它判断某模型在哪些渠道可用。
-		//
-		// **注意**：网关的 `channelId` 实际是**平台名**（`workbuddy` / `trae`），
-		// 不是渠道 id（`wb-cn`）。平台下沉到账号之后，注册表的键换成了平台，
-		// 目录也跟着用平台 —— 直接用它会一个渠道都对不上，
-		// 界面就会把所有模型标成"未分配到渠道"。
-		// 所以这里用 `accounts` 表做一次「平台 → 渠道」反查。
+		// 网关按真实分组聚合账号目录，管理面再叠加分组发布策略。
 		routes, err := ctx.Gateway.GetCatalog(r.Context())
 		if err != nil {
 			// 网关不可用时降级：不给渠道归属，但价格仍可看。
@@ -72,44 +66,7 @@ func registerCatalog(mux *http.ServeMux, ctx *svc.ServiceContext) {
 			routes = nil
 		}
 
-		accounts, _, err := ctx.Store.ListAccounts(r.Context(), store.AccountQuery{
-			Page:     1,
-			PageSize: 1000,
-		})
-		if err != nil {
-			accounts = nil
-		}
-
-		// 平台 → 渠道 id 集合（同一平台可能对应多个渠道）。
-		channelsByPlatform := make(map[string][]string, len(accounts))
-		for _, account := range accounts {
-			list := channelsByPlatform[account.Platform]
-			already := false
-			for _, id := range list {
-				if id == account.ChannelID {
-					already = true
-					break
-				}
-			}
-			if !already {
-				channelsByPlatform[account.Platform] = append(list, account.ChannelID)
-			}
-		}
-
-		byModel := make(map[string][]string, len(routes))
-		for _, item := range routes {
-			for _, channel := range item.Channels {
-				// 先按平台反查真实渠道；查不到就原样保留
-				// （可能是 fake 这类没有对应渠道记录的平台）。
-				ids := channelsByPlatform[channel.ChannelID]
-				if len(ids) == 0 {
-					ids = []string{channel.ChannelID}
-				}
-				for _, id := range ids {
-					byModel[item.Name] = append(byModel[item.Name], id)
-				}
-			}
-		}
+		byModel := channelRouteIndex(channels, routes)
 
 		type channelRef struct {
 			ID    string  `json:"id"`
@@ -183,12 +140,7 @@ func registerCatalog(mux *http.ServeMux, ctx *svc.ServiceContext) {
 
 // gatewayRouteIndex 把网关目录转成「模型对外名 → 分组 id 列表」。
 //
-// **网关的 `channelId` 实际是平台名**（`workbuddy` / `trae`），不是分组 id（`wb-cn`）——
-// 平台下沉到账号之后，注册表的键换成了平台，目录也跟着用平台。
-// 直接用它会一个分组都对不上，界面就会把所有模型标成"未对外开放"。
-// 所以要用 `accounts` 表做一次「平台 → 分组」反查。
-//
-// 返回 nil 表示网关目录不可用（降级：调用方应当放宽判断，不是全部拒绝）。
+// 网关目录不可用时返回 nil，公开清单不会将历史模型误报为可用模型。
 func gatewayRouteIndex(
 	ctx context.Context,
 	svcCtx *svc.ServiceContext,
@@ -198,44 +150,32 @@ func gatewayRouteIndex(
 		return nil
 	}
 
-	accounts, _, err := svcCtx.Store.ListAccounts(ctx, store.AccountQuery{
-		Page:     1,
-		PageSize: 1000,
-	})
+	channels, err := svcCtx.Store.ListChannels(ctx)
 	if err != nil {
-		accounts = nil
+		return nil
 	}
+	return channelRouteIndex(channels, routes)
+}
 
-	// 平台 → 分组 id 集合（同一平台可能对应多个分组）。
-	channelsByPlatform := make(map[string][]string, len(accounts))
-	for _, account := range accounts {
-		list := channelsByPlatform[account.Platform]
-		already := false
-		for _, id := range list {
-			if id == account.ChannelID {
-				already = true
-				break
-			}
-		}
-		if !already {
-			channelsByPlatform[account.Platform] = append(channelsByPlatform[account.Platform], account.ChannelID)
-		}
-	}
-
+// The gateway builds routes from each group's actual enabled accounts.
+// Never infer group membership from a platform name or a historical model row.
+func channelRouteIndex(channels []store.Channel, routes []gateway.CatalogModel) map[string][]string {
 	out := make(map[string][]string, len(routes))
-	for _, item := range routes {
-		for _, channel := range item.Channels {
-			ids := channelsByPlatform[channel.ChannelID]
-			if len(ids) == 0 {
-				// 查不到映射（如 fake 这类没有对应分组记录的平台）：原样保留。
-				ids = []string{channel.ChannelID}
+	for _, channel := range channels {
+		if !channel.Enabled || channel.AccountCount == 0 {
+			continue
+		}
+		for _, model := range routes {
+			for _, route := range model.Channels {
+				if route.ChannelID == channel.ID {
+					out[model.Name] = append(out[model.Name], channel.ID)
+					break
+				}
 			}
-			out[item.Name] = append(out[item.Name], ids...)
 		}
 	}
 	return out
 }
-
 
 type SyncResult struct {
 	// Synced 是写入/更新的模型数。
@@ -249,9 +189,9 @@ type SyncResult struct {
 // SyncCatalog 把网关的模型目录同步进 `models` 表。
 //
 // 三件事：
-//   1. 拉网关的 `/internal/catalog`；
-//   2. 逐个 upsert（只更新目录字段，价格与倍率保持人工配置）；
-//   3. 删掉不在清单里的模型（上游已下线）。
+//  1. 拉网关的 `/internal/catalog`；
+//  2. 逐个 upsert（只更新目录字段，价格与倍率保持人工配置）；
+//  3. 删掉不在清单里的模型（上游已下线）。
 //
 // 网关返回空清单时**跳过清理**：那通常意味着网关刚重启、矩阵还没建好，
 // 此时清空整张表会让用户以为模型全没了。
@@ -285,10 +225,14 @@ func SyncCatalog(ctx context.Context, svcCtx *svc.ServiceContext) (*SyncResult, 
 			maxOutput = &value
 		}
 
+		displayName := item.DisplayName
+		if displayName == "" {
+			displayName = item.Name
+		}
 		if err := svcCtx.Store.UpsertCatalogModel(ctx, store.CatalogModelInput{
 			CanonicalName: item.Name,
 			// 没有单独的展示名时用对外名，别留空 —— 界面会显示成空白标题。
-			DisplayName:   item.Name,
+			DisplayName:   displayName,
 			ContextWindow: contextWindow,
 			MaxOutput:     maxOutput,
 			Capabilities:  capsJSON,

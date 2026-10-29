@@ -696,3 +696,46 @@ A/B 结论：**单句各自 200，连排必 400**；改第二句无效，改**�
 参考实现按 look-ahead 写，这里用捕获组回填，效果等价。
 
 实测：带这两句的请求连续 3 次全部 200（修复前必 400）。
+
+### 数据层迁移：pgx 手写 SQL → GORM
+
+**范围**：后端全部（迁移机制 + 查询层）。
+
+| 项 | 迁移前 | 迁移后 |
+| --- | --- | --- |
+| 迁移 | 18 个手写 SQL 文件 + 自研执行器 | `AutoMigrate` + 显式迁移表 |
+| 模型 | 无（SQL 里内联） | `internal/models`，16 张表 |
+| 查询 | `pgxpool.Query/QueryRow/Exec` | GORM `Raw/Exec/Transaction` |
+| 驱动 | `pgx/v5` 直连 | `gorm.io/driver/postgres` |
+
+**旧 SQL 文件已备份**：`backend/artifacts/migrations-legacy/`（18 个）。
+
+**Schema 对拍**：177 个列定义，与旧库**逐个一致**。
+
+踩过的坑（都已修，且写了测试或注释）：
+
+1. **`int` 被映射成 `bigint`**：GORM 默认把 Go `int` 当 `bigint`。
+   显式 `type:integer` 才对得上原表。
+2. **`text[]` 扫不进 `[]string`**：GORM 无内置数组类型，
+   自定义 `models.TextArray`（实现 `Valuer` / `Scanner` / `GormDBDataType`）。
+3. **`Row().Scan` 与 `Scan` 语义不同**：
+   前者要求"每个参数对应一列"，传结构体会报 `expected N destination arguments`；
+   后者零行不报错，无法区分"查不到"。`queryOne` 按类型分流。
+4. **`= ANY(?)` 被展开成 `ANY($1,$2,$3)`**：GORM 会展开切片参数，改用 `IN (?)`。
+5. **唯一约束改名失败**：老库叫 `users_email_key`，GORM 认成 `uni_users_email`，
+   每次迁移都 `DROP CONSTRAINT` 一条不存在的约束（SQLSTATE 42704）。
+   按 SQLSTATE 识别并放行，注释里写清了原因。
+6. **`text[]` 为 NULL 时前端崩页**：`/keys` 读 `arr[0]` 直接白屏。
+   仓储层统一 `orEmptyText`，对外永远给空切片。
+
+**测试**：
+- `internal/database/migrate_test.go`：空库建表 + 幂等（用独立库 `TEST_DATABASE_URL_MIGRATE`）
+- `internal/store/store_integration_test.go`：分组 CRUD、**小数精度回归**、用户余额与扣款上限
+- 两个测试用**不同数据库**：`go test ./...` 并发跑各包，共用库会互相 `DROP SCHEMA` 导致 flake。
+
+**验收**（全部通过）：
+```
+go build / go vet / go test ./...        全绿
+smoke-api 22 · protocols 14 · key-isolation 16 · ccswitch 15
+audit-routes 36/36
+```

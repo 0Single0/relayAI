@@ -1,4 +1,3 @@
-import { Workflow } from "lucide-react";
 import { NavLink } from "react-router-dom";
 import {
   findActiveItem,
@@ -87,9 +86,17 @@ export const Sidebar = ({
   return (
     <div className="flex h-full min-h-0 flex-col bg-sidebar text-sidebar-foreground">
       <div className="flex h-14 shrink-0 items-center gap-2.5 border-b border-sidebar-border px-4">
-        <div className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-primary text-primary-foreground">
-          <Workflow className="size-4" aria-hidden="true" />
-        </div>
+        {/*
+          品牌标识用 `public/brand/logo.png`（用户提供的项目 logo），
+          不用 lucide 图标：图标只是占位，logo 才是品牌资产。
+          白丝带是图片里的负空间，所以这里不加任何底色/圆角容器。
+        */}
+        <img
+          src="/brand/logo.png"
+          alt=""
+          aria-hidden="true"
+          className="h-7 w-auto shrink-0 object-contain"
+        />
         <div className="min-w-0">
           <p className="truncate text-sm font-semibold tracking-tight">
             relayAI

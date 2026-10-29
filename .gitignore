@@ -17,6 +17,9 @@ gateway/.env
 .env
 .env.local
 
+# Docker bind mounts (database and deployment secrets)
+data/
+
 # Local tooling and QA artifacts
 .tmp/
 artifacts/

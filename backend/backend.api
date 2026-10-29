@@ -34,10 +34,39 @@ type HealthResponse {
 	Data    HealthData `json:"data"`
 }
 
+// Models are queried through the gateway; credentials are not persisted by discovery.
+type ModelDiscoveryRequest {
+	BaseURL string `json:"baseUrl"`
+	APIKey string `json:"apiKey"`
+	Protocol string `json:"protocol"`
+	AccountID int64 `json:"accountId,optional"` // Use the saved key when apiKey is empty.
+}
+
+type DiscoveredModel {
+	ID string `json:"id"`
+	DisplayName string `json:"display_name,optional"`
+	ContextLength int64 `json:"context_length,optional"`
+	MaxOutputTokens int64 `json:"max_output_tokens,optional"`
+	Capabilities map[string]bool `json:"capabilities,optional"`
+	ReasoningEfforts []string `json:"reasoning_efforts,optional"`
+	ReasoningEffortMap map[string]string `json:"reasoning_effort_map,optional"`
+	ReasoningDefaultEffort string `json:"reasoning_default_effort,optional"`
+}
+
+type ModelDiscoveryResponse {
+	Code int `json:"code"`
+	Success bool `json:"success"`
+	Msg string `json:"msg,optional"`
+	Data []DiscoveredModel `json:"data"`
+}
+
 @server (
 	prefix: /api/v1
 )
 service backend-api {
 	@handler HealthHandler
 	get /health (HealthRequest) returns (HealthResponse)
+
+	@handler ModelDiscoveryHandler
+	post /model-discoveries (ModelDiscoveryRequest) returns (ModelDiscoveryResponse)
 }

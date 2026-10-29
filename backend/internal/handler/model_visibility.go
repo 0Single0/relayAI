@@ -70,11 +70,7 @@ func visibleModels(
 
 		providers := routes[model.CanonicalName]
 		if len(providers) == 0 {
-			// 网关目录里没有这个模型的路由（可能是历史残留）。
-			// 保守起见仍然展示，但不参与"提供者"计算 —— 让管理员能看到它、
-			// 从而发现"目录里有、网关没路由"这种不一致。
-			byName[model.CanonicalName] = &VisibleModel{Model: model, Ratio: 1}
-			order = append(order, model.CanonicalName)
+			// Historical catalog entries never imply actual account support.
 			continue
 		}
 

@@ -53,7 +53,7 @@ export const ModelLogo = ({
           onError={() => setFailed(true)}
           className={cn(
             "object-contain",
-            size === "sm" ? "size-3" : "size-4",
+            size === "sm" ? "size-3" : "size-5",
           )}
         />
       ) : (

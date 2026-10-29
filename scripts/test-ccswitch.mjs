@@ -1,4 +1,4 @@
-﻿// 校验 ccswitch deeplink 的参数口径（对齐 sub2api 的 ccswitchImport.spec.ts）。
+// 校验 ccswitch deeplink 的参数口径（对齐 sub2api 的 ccswitchImport.spec.ts）。
 //
 // 用 TypeScript 官方编译器把 `lib/ccswitch.ts` 转成 ESM 再导入，
 // 不靠正则剥类型 —— 剥法一遇到 `platform?: string | null` 就会炸。
@@ -91,6 +91,22 @@ check(
   "endpoint 去掉末尾 /v1（codex）",
   codexParams.get("endpoint") === "http://localhost:18788",
   codexParams.get("endpoint"),
+);
+
+// 弹窗里显式选了 Codex CLI（没有平台信息）时也要走 codex 的 endpoint 规则。
+const codexClientParams = paramsOf(
+  buildCcSwitchDeeplink({
+    baseUrl: "http://localhost:18788/v1",
+    providerName: "relayAI",
+    apiKey: "sk-x",
+    clientType: "codex",
+  }),
+);
+check("app=codex（clientType 直选）", codexClientParams.get("app") === "codex", codexClientParams.get("app"));
+check(
+  "endpoint 去掉末尾 /v1（clientType 直选）",
+  codexClientParams.get("endpoint") === "http://localhost:18788",
+  codexClientParams.get("endpoint"),
 );
 
 // grok 相反：要求带 /v1

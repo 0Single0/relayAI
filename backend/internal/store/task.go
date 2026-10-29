@@ -3,11 +3,10 @@ package store
 import (
 	"context"
 	"crypto/rand"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
-
-	"github.com/jackc/pgx/v5"
 )
 
 // TaskChannel 是任务菜单的一项。
@@ -43,7 +42,7 @@ func (s *Store) ListTaskChannels(ctx context.Context) ([]TaskChannel, error) {
 		  AND (COALESCE(cap.tasks, false) OR COALESCE(cap.daily, false) OR COALESCE(cap.checkin, false))
 		ORDER BY c.priority DESC, c.id`
 
-	rows, err := s.pool.Query(ctx, query)
+	rows, err := s.db.WithContext(ctx).Raw(query).Rows()
 	if err != nil {
 		return nil, fmt.Errorf("查询任务渠道失败: %w", err)
 	}
@@ -118,7 +117,7 @@ func (s *Store) StartTaskRuns(
 			RETURNING id`
 
 		var id int64
-		if err := s.pool.QueryRow(ctx, query, batchID, channelID, uid, scope).Scan(&id); err != nil {
+		if err := s.db.WithContext(ctx).Raw(query, batchID, channelID, uid, scope).Row().Scan(&id); err != nil {
 			return "", nil, fmt.Errorf("创建任务记录失败: %w", err)
 		}
 
@@ -136,7 +135,7 @@ func (s *Store) RunningTaskRun(ctx context.Context, channelID, uid string) (*Tas
 		ORDER BY started_at DESC LIMIT 1`
 
 	var id int64
-	err := s.pool.QueryRow(ctx, query, channelID, uid).Scan(&id)
+	err := s.db.WithContext(ctx).Raw(query, channelID, uid).Row().Scan(&id)
 	if err != nil {
 		return nil, err
 	}
@@ -146,7 +145,7 @@ func (s *Store) RunningTaskRun(ctx context.Context, channelID, uid string) (*Tas
 
 // FailTaskRun 把 run 标成失败（例如"该账号已在执行中"）。
 func (s *Store) FailTaskRun(ctx context.Context, channelID, uid, reason string) error {
-	_, err := s.pool.Exec(ctx,
+	_, err := s.exec(ctx,
 		`UPDATE task_runs SET status = 'failed', error = $3, finished_at = now()
 		 WHERE channel_id = $1 AND account_uid = $2 AND status = 'running'`,
 		channelID, uid, reason,
@@ -164,18 +163,18 @@ func (s *Store) FailTaskRun(ctx context.Context, channelID, uid, reason string) 
 //   - ErrNotFound：这条 run 真的不存在（id 写错）；
 //   - ErrNotRunning：run 存在但已经不在执行中（已完成/已取消）。
 func (s *Store) CancelTaskRun(ctx context.Context, id int64) error {
-	result, err := s.pool.Exec(ctx,
+	affected, err := s.exec(ctx,
 		`UPDATE task_runs SET status = 'cancelled', finished_at = now()
 		 WHERE id = $1 AND status = 'running'`, id,
 	)
 	if err != nil {
 		return fmt.Errorf("取消任务失败: %w", err)
 	}
-	if result.RowsAffected() == 0 {
+	if affected == 0 {
 		// 没被更新：要么不存在，要么已经结束了。这两种对用户的意义完全不同。
 		var status string
-		err := s.pool.QueryRow(ctx, `SELECT status FROM task_runs WHERE id = $1`, id).Scan(&status)
-		if errors.Is(err, pgx.ErrNoRows) {
+		err := s.db.WithContext(ctx).Raw(`SELECT status FROM task_runs WHERE id = $1`, id).Row().Scan(&status)
+		if errors.Is(err, sql.ErrNoRows) {
 			return ErrNotFound
 		}
 		if err != nil {
@@ -220,7 +219,7 @@ func (s *Store) ListTaskRuns(ctx context.Context, query TaskRunQuery) ([]TaskRun
 	}
 
 	var total int
-	if err := s.pool.QueryRow(ctx, "SELECT count(*) FROM task_runs r "+where, args...).Scan(&total); err != nil {
+	if err := s.db.WithContext(ctx).Raw("SELECT count(*) FROM task_runs r "+where, args...).Row().Scan(&total); err != nil {
 		return nil, 0, fmt.Errorf("统计任务记录失败: %w", err)
 	}
 
@@ -238,7 +237,7 @@ func (s *Store) ListTaskRuns(ctx context.Context, query TaskRunQuery) ([]TaskRun
 		ORDER BY r.started_at DESC
 		LIMIT $%d OFFSET $%d`, where, len(listArgs)-1, len(listArgs))
 
-	rows, err := s.pool.Query(ctx, listQuery, listArgs...)
+	rows, err := s.db.WithContext(ctx).Raw(listQuery, listArgs...).Rows()
 	if err != nil {
 		return nil, 0, fmt.Errorf("查询任务记录失败: %w", err)
 	}
@@ -281,7 +280,7 @@ func (s *Store) GetTaskRun(ctx context.Context, id int64) (*TaskRun, []TaskRunIt
 
 	var run TaskRun
 	var startedAt, finishedAt any
-	err := s.pool.QueryRow(ctx, runQuery, id).Scan(
+	err := s.db.WithContext(ctx).Raw(runQuery, id).Row().Scan(
 		&run.ID, &run.BatchID, &run.ChannelID, &run.ChannelName,
 		&run.AccountUID, &run.AccountNickname,
 		&run.Scope, &run.Status, &run.Trigger,
@@ -298,7 +297,7 @@ func (s *Store) GetTaskRun(ctx context.Context, id int64) (*TaskRun, []TaskRunIt
 		SELECT id, run_id, code, name, kind, status, message, earned, finished_at
 		FROM task_run_items WHERE run_id = $1 ORDER BY id`
 
-	rows, err := s.pool.Query(ctx, itemQuery, id)
+	rows, err := s.queryRows(ctx, itemQuery, id)
 	if err != nil {
 		return nil, nil, fmt.Errorf("查询任务明细失败: %w", err)
 	}
@@ -327,8 +326,8 @@ func (s *Store) GetTaskRun(ctx context.Context, id int64) (*TaskRun, []TaskRunIt
 // 只要一列就够，别每次都把明细连表读一遍。
 func (s *Store) TaskRunStatusOf(ctx context.Context, id int64) (string, error) {
 	var status string
-	err := s.pool.QueryRow(ctx, `SELECT status FROM task_runs WHERE id = $1`, id).Scan(&status)
-	if errors.Is(err, pgx.ErrNoRows) {
+	err := s.db.WithContext(ctx).Raw(`SELECT status FROM task_runs WHERE id = $1`, id).Row().Scan(&status)
+	if errors.Is(err, sql.ErrNoRows) {
 		return "", ErrNotFound
 	}
 	if err != nil {
@@ -346,7 +345,7 @@ func (s *Store) TaskRunItemsAfter(ctx context.Context, runID, afterID int64) ([]
 		SELECT id, run_id, code, name, kind, status, message, earned, finished_at
 		FROM task_run_items WHERE run_id = $1 AND id > $2 ORDER BY id`
 
-	rows, err := s.pool.Query(ctx, query, runID, afterID)
+	rows, err := s.db.WithContext(ctx).Raw(query, runID, afterID).Rows()
 	if err != nil {
 		return nil, fmt.Errorf("查询任务明细失败: %w", err)
 	}
@@ -391,11 +390,11 @@ func (s *Store) TaskRunCounters(ctx context.Context, id int64) (*TaskRunProgress
 		FROM task_runs WHERE id = $1`
 
 	var progress TaskRunProgress
-	err := s.pool.QueryRow(ctx, query, id).Scan(
+	err := s.db.WithContext(ctx).Raw(query, id).Row().Scan(
 		&progress.ID, &progress.Status, &progress.Total, &progress.DoneCount,
 		&progress.FailedCount, &progress.SkippedCount, &progress.Earned, &progress.Error,
 	)
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
 	if err != nil {

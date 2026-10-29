@@ -486,7 +486,7 @@ export const ModelPlazaPage = () => {
                   再往上加列会让卡片宽过 400px，而内容只有两三行短文本，
                   横向留白堆积反而显得空。
                 */}
-                <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
+                <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 pb-4">
                   {group.models.map((model) => (
                     <ModelCard
                       key={`${channelID}-${model.name}`}
@@ -568,7 +568,7 @@ const ModelCard = ({
     */
     <article
       className={cn(
-        "flex h-full flex-col gap-4 rounded-lg border bg-card p-5 md:min-h-52",
+        "flex h-full flex-col gap-4 rounded-lg border bg-card p-5 md:min-h-48",
         // 浅阴影：只让卡片离开背景一点点，不做浮起的卡片墙。
         "shadow-[var(--shadow-card)] transition-shadow hover:shadow-[var(--shadow-card-hover)]",
       )}

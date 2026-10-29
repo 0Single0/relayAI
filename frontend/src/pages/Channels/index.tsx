@@ -11,7 +11,6 @@ import { Pagination } from "@/components/common/Pagination";
 import { RowActions } from "@/components/common/RowActions";
 import { StatusBadge } from "@/components/common/StatusBadge";
 import { Button } from "@/components/ui/button";
-import { listCatalogModels } from "@/api/catalog";
 import { deleteChannel } from "@/api/channels";
 import {
   Dialog,
@@ -22,14 +21,14 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { ChannelFormSheet } from "@/pages/Channels/components/ChannelFormSheet";
+import { ChannelModelsDialog } from "@/pages/Channels/components/ChannelModelsDialog";
 import { platformLabel } from "@/pages/Channels/shared";
 import { cn } from "@/lib/utils";
 import { getRequestErrorMessage } from "@/utils/request";
 
 export const ChannelsPage = () => {
   const [channels, setChannels] = useState<Channel[]>([]);
-  // 模型目录：给分组的「对外模型」白名单做选项。
-  const [models, setModels] = useState<Array<{ name: string }>>([]);
+  const [modelTarget, setModelTarget] = useState<Channel | null>(null);
   const [error, setError] = useState("");
   const [isLoading, setIsLoading] = useState(true);
   const [keyword, setKeyword] = useState("");
@@ -45,13 +44,8 @@ export const ChannelsPage = () => {
   const load = useCallback(async () => {
     setIsLoading(true);
     try {
-      const [response, modelResponse] = await Promise.all([
-        listChannels(),
-        // 模型目录拉不到不影响分组列表：白名单那块会显示"还没有模型目录"。
-        listCatalogModels().catch(() => null),
-      ]);
+      const response = await listChannels();
       setChannels(response.data ?? []);
-      setModels(modelResponse?.data?.models ?? []);
       setError("");
     } catch (requestError) {
       setError(getRequestErrorMessage(requestError));
@@ -216,7 +210,7 @@ export const ChannelsPage = () => {
     {
       key: "actions",
       header: "操作",
-      width: "112px",
+      width: "152px",
       align: "center",
       render: (channel) => (
         <RowActions
@@ -227,6 +221,12 @@ export const ChannelsPage = () => {
               icon: PencilLine,
               tone: "primary",
               onClick: () => openEdit(channel),
+            },
+            {
+              label: "对外模型",
+              id: "models",
+              icon: Boxes,
+              onClick: () => setModelTarget(channel),
             },
             {
               label: "查看详情",
@@ -350,13 +350,14 @@ export const ChannelsPage = () => {
       <ChannelFormSheet
         open={formOpen}
         channel={editing}
-        models={models}
         onOpenChange={setFormOpen}
         onSaved={() => {
           setFormOpen(false);
           setReloadKey((value) => value + 1);
         }}
       />
+
+      <ChannelModelsDialog channel={modelTarget} onClose={() => setModelTarget(null)} onSaved={() => { setModelTarget(null); setReloadKey((value) => value + 1); }} />
 
       {/* 删除确认：必须说清"会连带删掉账号"，这是不可撤销的操作。 */}
       <Dialog open={deleting !== null} onOpenChange={(next) => !next && setDeleting(null)}>

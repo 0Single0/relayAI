@@ -1,0 +1,5 @@
+deploy/docker/*.sh text eol=lf
+deploy/docker/*.Dockerfile text eol=lf
+deploy/docker/*.conf text eol=lf
+deploy/docker/*.yaml text eol=lf
+compose.yaml text eol=lf

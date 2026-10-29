@@ -41,12 +41,18 @@ pub fn router(state: SharedGateway, token: String) -> Router<SharedGateway> {
         .route("/internal/decisions", get(decisions))
         .route("/internal/matrix/refresh", post(refresh_matrix))
         .route("/internal/channels/{id}/models", get(channel_models))
+        .route("/internal/model-discoveries", post(discover_models))
         .route("/internal/channels/{id}/caps", get(channel_caps))
         .route("/internal/channels/{id}/probe", post(probe_channel))
         .route("/internal/accounts", post(create_account))
         .route("/internal/accounts/{key}/refresh", post(refresh_account))
         .route("/internal/accounts/{key}/probe", post(probe_account))
-        .route("/internal/accounts/{key}/quota", get(account_quota))
+        // 同一路径挂 GET + POST：GET 读内存快照，POST 强制打上游刷新。
+        .route(
+            "/internal/accounts/{key}/quota",
+            get(account_quota).post(refresh_account_quota),
+        )
+        .route("/internal/accounts/{key}/reset", post(reset_account_cooldowns))
         .route("/internal/channels/{id}/login/start", post(login_start))
         .route("/internal/channels/{id}/login/poll", post(login_poll))
         .route("/internal/channels/{id}/login/complete", post(login_complete))
@@ -142,6 +148,21 @@ async fn status(State(state): State<SharedGateway>) -> Response {
                 "ready": account.is_ready("", now),
                 "blockedReasons": blocked,
                 "cooldownUntilMs": account.cooldown_until_ms(),
+                /*
+                  模型级限流明细。
+
+                  上游按模型限额是常态。只给账号级的 `cooldownUntilMs`
+                  会让"某个模型在限流"看起来像"整个号废了"，
+                  用户据此删号重建反而丢了配置。
+
+                  每项形如 `{"model":"glm-5.3","untilMs":1793168000000}`，
+                  只含**尚未恢复**的。
+                */
+                "modelLimits": account
+                    .model_cooldowns_snapshot(now)
+                    .into_iter()
+                    .map(|(model, until)| json!({ "model": model, "untilMs": until }))
+                    .collect::<Vec<_>>(),
                 "requiresCredential": account.requires_credential,
                 "hasCredential": account.credentials().is_present(),
                 // 静态凭据（自定义供应商的 API Key）没有"刷新"这回事：
@@ -272,7 +293,7 @@ async fn catalog(State(state): State<SharedGateway>) -> Response {
 
     let mut models: Vec<Value> = Vec::new();
     for public_model in matrix.public_models() {
-        let routes = matrix.routes(&public_model);
+        let routes = matrix.all_routes(&public_model);
         let Some(first) = routes.first() else {
             continue;
         };
@@ -300,7 +321,8 @@ async fn catalog(State(state): State<SharedGateway>) -> Response {
 
         models.push(json!({
             "name": public_model,
-            "contextWindows": first.context_windows,
+            "displayName": first.display_name.as_deref().unwrap_or(&public_model),
+            "contextWindows": if first.context_windows.is_empty() { first.limits.context.into_iter().collect::<Vec<_>>() } else { first.context_windows.clone() },
             "reasoningEfforts": first.reasoning_efforts,
             "capabilities": {
                 "vision": first.capabilities.vision,
@@ -366,21 +388,57 @@ async fn channel_models(
     State(state): State<SharedGateway>,
     Path(id): Path<String>,
 ) -> Response {
-    let Some(adapter) = state.adapter_for_channel_async(&id).await else {
-        return (StatusCode::NOT_FOUND, Json(json!({ "error": "渠道不存在" }))).into_response();
-    };
+    let mut models = Vec::new();
+    for account in state.pool.by_channel(&id).iter().filter(|account| account.enabled) {
+        match state.models_for_account(account).await {
+            Ok(entries) => {
+                for model in entries {
+                    if !models.iter().any(|existing: &crate::gateway::channels::UpstreamModel| existing.id == model.id) {
+                        models.push(model);
+                    }
+                }
+            }
+            Err(error) => return internal_error(error),
+        }
+    }
+    Json(json!(models)).into_response()
+}
 
-    let account = state
-        .first_account_for(&id)
-        .unwrap_or_else(|| crate::gateway::channels::AccountSnapshot {
-            channel_id: id.clone(),
-            ..Default::default()
-        });
+#[derive(Deserialize)]
+struct DiscoverModelsBody {
+    base_url: String,
+    api_key: String,
+    protocol: String,
+    account_id: Option<i64>,
+}
 
-    match adapter.list_models(&state.client, &account).await {
-        Ok(Some(models)) => Json(json!(models)).into_response(),
-        Ok(None) => Json(json!([])).into_response(),
-        Err(error) => internal_error(error),
+async fn discover_models(State(state): State<SharedGateway>, Json(body): Json<DiscoverModelsBody>) -> Response {
+    let mut api_key = body.api_key;
+    if api_key.trim().is_empty() {
+        let Some(id) = body.account_id else {
+            return (StatusCode::BAD_REQUEST, "请填写 API Key").into_response();
+        };
+        let cipher = sqlx::query_scalar::<_, Option<Vec<u8>>>(
+            "SELECT credential_cipher FROM accounts WHERE id = $1 AND platform = 'custom'",
+        ).bind(id).fetch_optional(state.storage.pool()).await;
+        let cipher = match cipher {
+            Ok(Some(Some(value))) => value,
+            Ok(_) => return (StatusCode::BAD_REQUEST, "账号没有可用的 API Key").into_response(),
+            Err(error) => return internal_error(GatewayError::internal(format!("读取账号凭据失败：{error}"))),
+        };
+        let credential = String::from_utf8(cipher).ok().and_then(|sealed| {
+            crate::gateway::security::envelope::open(&state.storage.master_key(), &sealed).ok()
+        }).and_then(|plain| serde_json::from_str::<crate::gateway::channels::Credential>(&plain).ok());
+        let Some(credential) = credential else {
+            return internal_error(GatewayError::internal("账号凭据无法解密，请重新设置 API Key"));
+        };
+        api_key = credential.access_token;
+    }
+    match crate::gateway::channels::custom::fetch_models(
+        &state.client, &body.base_url, None, &api_key, &body.protocol,
+    ).await {
+        Ok(models) => Json(json!(models)).into_response(),
+        Err(error) => error.into_response(),
     }
 }
 
@@ -523,6 +581,54 @@ async fn account_quota(State(state): State<SharedGateway>, Path(key): Path<Strin
     }
 }
 
+/// 强制刷新账号额度（面板「刷新积分」按钮 + 30s 自动轮询）。
+///
+/// 与 [`account_quota`]（读内存快照）不同，这里真实打一次上游的额度接口。
+/// 静态凭据与自定义供应商没有额度概念（`fetch_quota` 返回 `Ok(None)`），
+/// 返回 `null` 让前端如实显示"—"，而不是报错。
+async fn refresh_account_quota(
+    State(state): State<SharedGateway>,
+    Path(key): Path<String>,
+) -> Response {
+    let (channel_id, uid) = split_key(&key);
+    let Some(account) = state.account(&channel_id, &uid) else {
+        return (StatusCode::NOT_FOUND, Json(json!({ "error": "账号不存在" }))).into_response();
+    };
+
+    let Some(adapter) = state.adapter_for(&account) else {
+        return (StatusCode::NOT_FOUND, Json(json!({ "error": "账号没有可用的平台适配器" }))).into_response();
+    };
+
+    match adapter.fetch_quota(&state.client, &account.snapshot()).await {
+        Ok(snapshot) => {
+            // 快照带时间戳落进内存：GET /quota 与状态接口下次读的就是这份。
+            account.set_quota(snapshot);
+            Json(json!({ "ok": true })).into_response()
+        }
+        Err(error) => internal_error(error),
+    }
+}
+
+/// 手动清掉该账号的全部冷却（账号级 + 模型级 + 退避计数）。
+///
+/// 用途：上游恢复得比我们的退避策略早时，自动等待会让号白闲着。
+/// 管理员确认"其实已经能用"就该能立刻放行，而不是干等到点。
+///
+/// 返回 `cleared` 表示**是否真的清掉了东西**：
+/// 没有冷却时点它是无害的，但界面该知道"本来就没在冷却"。
+async fn reset_account_cooldowns(
+    State(state): State<SharedGateway>,
+    Path(key): Path<String>,
+) -> Response {
+    let (channel_id, uid) = split_key(&key);
+    let Some(account) = state.account(&channel_id, &uid) else {
+        return (StatusCode::NOT_FOUND, Json(json!({ "error": "账号不存在" }))).into_response();
+    };
+
+    let cleared = account.reset_cooldowns();
+    Json(json!({ "cleared": cleared })).into_response()
+}
+
 #[derive(Debug, Deserialize)]
 struct LoginStartBody {
     /// 上游平台（`workbuddy` / `trae`）。决定用哪个适配器登录。
@@ -609,6 +715,7 @@ struct LoginPollBody {
     /// 平台。登录流程无状态（网关不为每个 ticket 存平台），
     /// 所以每次都从请求里带 —— 少了它就拿不到适配器。
     platform: Option<String>,
+    options: Option<Value>,
 }
 
 /// 轮询登录结果。
@@ -633,7 +740,7 @@ async fn login_poll(
         }))
         .into_response(),
         Ok(LoginPoll::Ready(credential)) => {
-            match persist_login(&state, &id, adapter.adapter_kind(), *credential).await {
+            match persist_login(&state, &id, adapter.adapter_kind(), *credential, body.options.clone()).await {
                 Ok(uid) => Json(json!({
                     "state": "ready",
                     "message": "授权完成，账号已添加",
@@ -657,6 +764,7 @@ struct LoginCompleteBody {
     state: String,
     callback: String,
     platform: Option<String>,
+    options: Option<Value>,
 }
 
 /// 用用户粘贴的回调地址完成登录（Trae 这类回环回调）。
@@ -676,7 +784,7 @@ async fn login_complete(
 
     let _ = body.state;
     match adapter.login_complete(&state.client, &body.callback).await {
-        Ok(credential) => match persist_login(&state, &id, adapter.adapter_kind(), credential).await {
+        Ok(credential) => match persist_login(&state, &id, adapter.adapter_kind(), credential, body.options).await {
             Ok(uid) => Json(json!({
                 "state": "ready",
                 "message": "授权完成，账号已添加",
@@ -700,10 +808,20 @@ async fn create_account(
     State(state): State<SharedGateway>,
     Json(body): Json<CreateAccountBody>,
 ) -> Response {
-    if body.channel_id.trim().is_empty() || body.uid.trim().is_empty() {
+    /*
+      `channel_id` 允许为空：号可以先建、之后再分配分组。
+
+      为什么放宽：建号时（尤其批量导入、授权刚完成）常常还没想好归到哪个计价桶。
+      强制先选分组会催生"为了建号随便建一个分组"的脏数据。
+
+      空分组的账号在 `list_accounts` 里照常加载，
+      但不会命中任何真实 channel —— 天然不参与调度，凭据与用量归属都保留。
+      界面上单独标识为"待分配"，之后在账号列表里批量分配。
+    */
+    if body.uid.trim().is_empty() {
         return (
             StatusCode::BAD_REQUEST,
-            Json(json!({ "error": "渠道与账号标识都不能为空" })),
+            Json(json!({ "error": "账号标识不能为空" })),
         )
             .into_response();
     }
@@ -733,22 +851,25 @@ async fn create_account(
     // 账号建出来了但没有凭据，看起来像"登录失败"。
     let inserted = sqlx::query(
         "INSERT INTO accounts
-             (channel_id, uid, nickname, enabled, source, base_url, protocol, platform, options)
-         VALUES ($1, $2, $3, true, 'manual', $4, $5, $6, $7)
-         ON CONFLICT (channel_id, uid) DO UPDATE SET
+             (channel_id, uid, nickname, enabled, source, base_url, protocol, platform, options, model_allow)
+         VALUES (NULLIF($1, ''), $2, $3, true, 'manual', $4, $5, $6, $7, $8)
+         ON CONFLICT (uid) DO UPDATE SET
              nickname = EXCLUDED.nickname,
              base_url = EXCLUDED.base_url,
              protocol = EXCLUDED.protocol,
              platform = EXCLUDED.platform,
-             options  = EXCLUDED.options",
+             options  = EXCLUDED.options,
+             model_allow = EXCLUDED.model_allow,
+             channel_id = COALESCE(EXCLUDED.channel_id, accounts.channel_id)",
     )
-    .bind(&body.channel_id)
+    .bind(body.channel_id.trim())
     .bind(&body.uid)
     .bind(&body.nickname)
     .bind(&base_url)
     .bind(&protocol)
     .bind(body.platform.trim())
     .bind(&options)
+    .bind(&body.model_allow)
     .execute(state.storage.pool())
     .await;
 
@@ -760,9 +881,11 @@ async fn create_account(
     // 凭据由登录流程回写；此时把 `credential_cipher` 覆盖成空会让
     // 已登录的号突然变"无凭据"。
     if !body.api_key.trim().is_empty() {
+        // 按 uid 定位：未分配分组的行 channel_id 是 NULL，
+        // (channel_id, uid) 的 WHERE 匹配不到它。
         if let Err(error) = state
             .storage
-            .set_credential(&body.channel_id, &body.uid, Some(&credential))
+            .set_credential_by(&body.channel_id, &body.uid, Some(&credential))
             .await
         {
             return internal_error(error);
@@ -793,6 +916,8 @@ struct CreateAccountBody {
     protocol: Option<String>,
     /// 适配器私有参数（workbuddy 的 realm / outbound_identity）。
     options: Option<serde_json::Value>,
+    #[serde(default)]
+    model_allow: Vec<String>,
 }
 
 /// 把登录拿到的凭据落库并重建号池。
@@ -804,7 +929,10 @@ async fn persist_login(
     channel_id: &str,
     platform: &str,
     credential: crate::gateway::channels::Credential,
+    options: Option<Value>,
 ) -> Result<String, GatewayError> {
+    let channel_id = if channel_id == "__unassigned__" { "" } else { channel_id };
+    let options = options.unwrap_or_else(|| json!({}));
     let uid = credential
         .uid
         .clone()
@@ -813,16 +941,19 @@ async fn persist_login(
     let nickname = credential.nickname.clone().unwrap_or_else(|| uid.clone());
 
     sqlx::query(
-        "INSERT INTO accounts (channel_id, uid, nickname, enabled, source, platform)
-         VALUES ($1, $2, $3, true, 'login', $4)
-         ON CONFLICT (channel_id, uid) DO UPDATE SET
+        "INSERT INTO accounts (channel_id, uid, nickname, enabled, source, platform, options)
+         VALUES (NULLIF($1, ''), $2, $3, true, 'login', $4, $5)
+         ON CONFLICT (uid) DO UPDATE SET
              nickname = EXCLUDED.nickname,
-             platform = EXCLUDED.platform",
+             platform = EXCLUDED.platform,
+             options = EXCLUDED.options,
+             channel_id = COALESCE(EXCLUDED.channel_id, accounts.channel_id)",
     )
     .bind(channel_id)
     .bind(&uid)
     .bind(&nickname)
     .bind(platform)
+    .bind(&options)
     .execute(state.storage.pool())
     .await
     .map_err(|error| GatewayError::internal(format!("账号落库失败：{error}")))?;

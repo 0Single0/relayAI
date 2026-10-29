@@ -3,6 +3,8 @@ package store
 import (
 	"context"
 	"fmt"
+
+	"gorm.io/gorm"
 )
 
 // 余额扣费。
@@ -62,29 +64,20 @@ func (s *Store) SettleUsage(ctx context.Context, limit int) (*Settlement, error)
 		ORDER BY u.id
 		LIMIT $1`
 
-	rows, err := s.pool.Query(ctx, pickQuery, limit)
-	if err != nil {
+	type entry struct {
+		UsageID int64   `gorm:"column:id"`
+		UserID  int64   `gorm:"column:user_id"`
+		Amount  float64 `gorm:"column:billed_cost"`
+	}
+
+	var rows []entry
+	if err := s.queryAll(ctx, &rows, pickQuery, limit); err != nil {
 		return nil, fmt.Errorf("查询未结算用量失败: %w", err)
 	}
 
-	type entry struct {
-		usageID int64
-		userID  int64
-		amount  float64
-	}
-
-	entries := make([]entry, 0, limit)
-	for rows.Next() {
-		var item entry
-		if err := rows.Scan(&item.usageID, &item.userID, &item.amount); err != nil {
-			rows.Close()
-			return nil, fmt.Errorf("扫描未结算用量失败: %w", err)
-		}
-		entries = append(entries, item)
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return nil, err
+	entries := make([]entry, 0, len(rows))
+	for _, row := range rows {
+		entries = append(entries, row)
 	}
 
 	result := &Settlement{Count: len(entries)}
@@ -99,64 +92,61 @@ func (s *Store) SettleUsage(ctx context.Context, limit int) (*Settlement, error)
 	byUser := make(map[int64]float64, 16)
 	usageByUser := make(map[int64][]int64, 16)
 	for _, item := range entries {
-		byUser[item.userID] += item.amount
-		usageByUser[item.userID] = append(usageByUser[item.userID], item.usageID)
-		result.Amount += item.amount
+		byUser[item.UserID] += item.Amount
+		usageByUser[item.UserID] = append(usageByUser[item.UserID], item.UsageID)
+		result.Amount += item.Amount
 	}
 	result.Users = len(byUser)
 
 	for userID, amount := range byUser {
 		ids := usageByUser[userID]
 
-		tx, err := s.pool.Begin(ctx)
-		if err != nil {
-			return result, fmt.Errorf("开启结算事务失败: %w", err)
-		}
+		// 每个用户一个独立事务：一个用户余额不足不该回滚别人的扣款。
+		txErr := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+			// 条件更新：余额够才扣。`RETURNING` 在零行时 GORM 不会报错，
+			// 所以用 RowsAffected 判断"余额不足"。
+			var balance float64
+			update := tx.Raw(
+				`UPDATE users
+				    SET balance = balance - ?
+				  WHERE id = ? AND balance >= ?
+				 RETURNING balance::float8`,
+				amount, userID, amount,
+			).Scan(&balance)
 
-		// 条件更新：余额够才扣。`GREATEST` 保证不会扣成负数。
-		var balance float64
-		err = tx.QueryRow(ctx,
-			`UPDATE users
-			    SET balance = balance - $2
-			  WHERE id = $1 AND balance >= $2
-			 RETURNING balance::float8`,
-			userID, amount,
-		).Scan(&balance)
-
-		insufficient := false
-		if err != nil {
-			// 余额不足（或用户不存在）：不扣款，但仍然把用量标记为已结算，
-			// 否则这批数据会被反复挑出来、无限重试。
-			insufficient = true
-			result.Insufficient = append(result.Insufficient, userID)
-		} else {
-			if _, err := tx.Exec(ctx,
-				`INSERT INTO balance_transactions (user_id, amount, balance_after, kind, note)
-				 VALUES ($1, $2, $3, 'usage', $4)`,
-				userID, -amount, balance,
-				fmt.Sprintf("结算 %d 条用量", len(ids)),
-			); err != nil {
-				_ = tx.Rollback(ctx)
-				return result, fmt.Errorf("写入余额流水失败: %w", err)
+			insufficient := update.RowsAffected == 0
+			if !insufficient {
+				if err := tx.Exec(
+					`INSERT INTO balance_transactions (user_id, amount, balance_after, kind, note)
+					 VALUES (?, ?, ?, 'usage', ?)`,
+					userID, -amount, balance,
+					fmt.Sprintf("结算 %d 条用量", len(ids)),
+				).Error; err != nil {
+					return fmt.Errorf("写入余额流水失败: %w", err)
+				}
 			}
-		}
 
-		// 标记已结算。余额不足的也标记 —— 见上面的说明。
-		if _, err := tx.Exec(ctx,
-			"UPDATE usage_logs SET settled_at = now() WHERE id = ANY($1)",
-			ids,
-		); err != nil {
-			_ = tx.Rollback(ctx)
-			return result, fmt.Errorf("标记用量已结算失败: %w", err)
-		}
+			// 标记已结算。余额不足的也标记 —— 见上方说明。
+			//
+			// 用 `IN (?)` 而不是 `= ANY(?)`：GORM 会把切片展开成
+			// `IN ($1,$2,$3)`，而 `ANY(...)` 需要的是**单个数组参数**，
+			// 展开后会变成 `ANY($1,$2,$3)` —— 语法错误（实测 SQLSTATE 42601）。
+			if err := tx.Exec(
+				"UPDATE usage_logs SET settled_at = now() WHERE id IN (?)",
+				ids,
+			).Error; err != nil {
+				return fmt.Errorf("标记用量已结算失败: %w", err)
+			}
 
-		if err := tx.Commit(ctx); err != nil {
-			return result, fmt.Errorf("提交结算事务失败: %w", err)
-		}
-
-		if insufficient {
-			// 余额不足时这笔金额没扣，从总额里减掉，避免报表虚高。
-			result.Amount -= amount
+			if insufficient {
+				// 余额不足时这笔金额没扣，从总额里减掉，避免报表虚高。
+				result.Amount -= amount
+				result.Insufficient = append(result.Insufficient, userID)
+			}
+			return nil
+		})
+		if txErr != nil {
+			return result, txErr
 		}
 	}
 

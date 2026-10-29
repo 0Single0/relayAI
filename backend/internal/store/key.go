@@ -58,31 +58,31 @@ func (s *Store) ListKeys(ctx context.Context) ([]APIKey, error) {
 		       expires_at, last_used_at, created_at, key_plaintext
 		FROM api_keys ORDER BY created_at DESC`
 
-	rows, err := s.pool.Query(ctx, query)
-	if err != nil {
+	var rows []keyRow
+	if err := s.queryAll(ctx, &rows, query); err != nil {
 		return nil, fmt.Errorf("查询密钥失败: %w", err)
 	}
-	defer rows.Close()
 
-	list := make([]APIKey, 0, 8)
-	for rows.Next() {
-		var key APIKey
-		var expiresAt, lastUsedAt, createdAt any
-		if err := rows.Scan(
-			&key.ID, &key.Name, &key.KeyPrefix,
-			&key.ChannelAllow, &key.ModelAllow,
-			&key.RPMLimit, &key.DailyTokenLimit, &key.MaxConcurrency, &key.Enabled,
-			&expiresAt, &lastUsedAt, &createdAt, &key.Plaintext,
-		); err != nil {
-			return nil, fmt.Errorf("扫描密钥失败: %w", err)
-		}
-		key.ExpiresAt = nullableTime(expiresAt)
-		key.LastUsedAt = nullableTime(lastUsedAt)
-		key.CreatedAt = formatTime(createdAt)
-		list = append(list, key)
+	list := make([]APIKey, 0, len(rows))
+	for _, row := range rows {
+		list = append(list, APIKey{
+			ID:              row.ID,
+			Name:            row.Name,
+			KeyPrefix:       row.KeyPrefix,
+			ChannelAllow:    orEmptyText(row.ChannelAllow),
+			ModelAllow:      orEmptyText(row.ModelAllow),
+			RPMLimit:        row.RPMLimit,
+			DailyTokenLimit: row.DailyTokenLimit,
+			MaxConcurrency:  row.MaxConcurrency,
+			Enabled:         row.Enabled,
+			ExpiresAt:       nullableTimePtr(row.ExpiresAt),
+			LastUsedAt:      nullableTimePtr(row.LastUsedAt),
+			CreatedAt:       formatTimeValue(row.CreatedAt),
+			Plaintext:       row.KeyPlaintext,
+		})
 	}
 
-	return list, rows.Err()
+	return list, nil
 }
 
 // CreateKey 新建密钥，返回**一次性明文**。
@@ -105,16 +105,20 @@ func (s *Store) CreateKey(ctx context.Context, input KeyInput) (*APIKey, string,
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 		RETURNING id, created_at`
 
-	var id int64
-	var createdAt any
-	if err := s.pool.QueryRow(ctx, query,
+	var created struct {
+		ID        int64 `gorm:"column:id"`
+		CreatedAt time.Time `gorm:"column:created_at"`
+	}
+	if err := s.queryOne(ctx, &created, query,
 		input.Name, hash, prefix, plaintext,
 		emptyToNil(input.ChannelAllow), emptyToNil(input.ModelAllow),
 		input.RPMLimit, input.DailyTokenLimit, input.MaxConcurrency,
 		enabled, input.ExpiresAt, nullableUserID(input.UserID),
-	).Scan(&id, &createdAt); err != nil {
+	); err != nil {
 		return nil, "", fmt.Errorf("新建密钥失败: %w", err)
 	}
+	id := created.ID
+	createdAt := formatTimeValue(created.CreatedAt)
 
 	key := &APIKey{
 		ID:              id,
@@ -148,7 +152,7 @@ func (s *Store) UpdateKey(ctx context.Context, id int64, input KeyInput) (*APIKe
 		    expires_at = $9
 		WHERE id = $1`
 
-	result, err := s.pool.Exec(ctx, query,
+	affected, err := s.exec(ctx, query,
 		id, input.Name,
 		emptyToNil(input.ChannelAllow), emptyToNil(input.ModelAllow),
 		input.RPMLimit, input.DailyTokenLimit, input.MaxConcurrency,
@@ -157,7 +161,7 @@ func (s *Store) UpdateKey(ctx context.Context, id int64, input KeyInput) (*APIKe
 	if err != nil {
 		return nil, fmt.Errorf("更新密钥失败: %w", err)
 	}
-	if result.RowsAffected() == 0 {
+	if affected == 0 {
 		return nil, ErrNotFound
 	}
 
@@ -176,11 +180,11 @@ func (s *Store) UpdateKey(ctx context.Context, id int64, input KeyInput) (*APIKe
 
 // DeleteKey 删除密钥。
 func (s *Store) DeleteKey(ctx context.Context, id int64) error {
-	result, err := s.pool.Exec(ctx, "DELETE FROM api_keys WHERE id = $1", id)
+	affected, err := s.exec(ctx, "DELETE FROM api_keys WHERE id = $1", id)
 	if err != nil {
 		return fmt.Errorf("删除密钥失败: %w", err)
 	}
-	if result.RowsAffected() == 0 {
+	if affected == 0 {
 		return ErrNotFound
 	}
 	return nil
@@ -193,14 +197,14 @@ func (s *Store) RotateKey(ctx context.Context, id int64) (string, error) {
 		return "", err
 	}
 
-	result, err := s.pool.Exec(ctx,
+	affected, err := s.exec(ctx,
 		"UPDATE api_keys SET key_hash = $2, key_prefix = $3 WHERE id = $1",
 		id, hash, prefix,
 	)
 	if err != nil {
 		return "", fmt.Errorf("轮换密钥失败: %w", err)
 	}
-	if result.RowsAffected() == 0 {
+	if affected == 0 {
 		return "", ErrNotFound
 	}
 
@@ -222,22 +226,25 @@ func (s *Store) ResolveKey(ctx context.Context, plaintext string) (*APIKey, erro
 		       expires_at, last_used_at, created_at
 		FROM api_keys WHERE key_hash = $1`
 
-	var key APIKey
-	var expiresAt, lastUsedAt, createdAt any
-	err := s.pool.QueryRow(ctx, query, hash).Scan(
-		&key.ID, &key.Name, &key.KeyPrefix,
-		&key.ChannelAllow, &key.ModelAllow,
-		&key.RPMLimit, &key.DailyTokenLimit, &key.MaxConcurrency, &key.Enabled,
-		&expiresAt, &lastUsedAt, &createdAt,
-	)
-	if err != nil {
+	var row keyRow
+	if err := s.queryOne(ctx, &row, query, hash); err != nil {
 		return nil, ErrNotFound
 	}
-	key.ExpiresAt = nullableTime(expiresAt)
-	key.LastUsedAt = nullableTime(lastUsedAt)
-	key.CreatedAt = formatTime(createdAt)
 
-	return &key, nil
+	return &APIKey{
+		ID:              row.ID,
+		Name:            row.Name,
+		KeyPrefix:       row.KeyPrefix,
+		ChannelAllow:    orEmptyText(row.ChannelAllow),
+		ModelAllow:      orEmptyText(row.ModelAllow),
+		RPMLimit:        row.RPMLimit,
+		DailyTokenLimit: row.DailyTokenLimit,
+		MaxConcurrency:  row.MaxConcurrency,
+		Enabled:         row.Enabled,
+		ExpiresAt:       nullableTimePtr(row.ExpiresAt),
+		LastUsedAt:      nullableTimePtr(row.LastUsedAt),
+		CreatedAt:       formatTimeValue(row.CreatedAt),
+	}, nil
 }
 
 // generateKey 生成 `sk-` 开头的密钥，返回明文、前缀与哈希。
@@ -262,22 +269,6 @@ func hashKey(plaintext string) string {
 // nilIfEmpty 把空串存成 NULL。
 //
 // 库里"没配"只有一种表示（NULL），查询与判断才不用同时处理 '' 和 NULL。
-func nilIfEmpty(value string) any {
-	if value == "" {
-		return nil
-	}
-	return value
-}
-
-// emptyToNil 把空数组存成 NULL，让"空 = 不限"的语义在库里一致。
-func emptyToNil(values []string) []string {
-	if len(values) == 0 {
-		return nil
-	}
-	return values
-}
-
-// nullableUserID 把 0 存成 NULL。
 //
 // `user_id` 是外键，0 不是合法用户 —— 直接写 0 会违反外键约束。
 // 用 nil 表示"没有归属"，语义也更准确。

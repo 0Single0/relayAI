@@ -98,7 +98,7 @@ func (s *Store) listChannelBase(ctx context.Context) ([]ChannelHealth, error) {
 		) a ON a.channel_id = c.id
 		ORDER BY c.priority DESC, c.id`
 
-	rows, err := s.pool.Query(ctx, query)
+	rows, err := s.db.WithContext(ctx).Raw(query).Rows()
 	if err != nil {
 		return nil, fmt.Errorf("查询渠道健康度失败: %w", err)
 	}
@@ -141,7 +141,7 @@ func (s *Store) attachChannelUsage(
 		WHERE NOT is_rejection AND ts >= $1
 		GROUP BY channel_id`
 
-	rows, err := s.pool.Query(ctx, query, from)
+	rows, err := s.db.WithContext(ctx).Raw(query, from).Rows()
 	if err != nil {
 		return fmt.Errorf("统计渠道用量失败: %w", err)
 	}
@@ -199,7 +199,7 @@ func (s *Store) attachChannelRecent(
 		WHERE position <= $2
 		ORDER BY channel_id, ts, id`
 
-	rows, err := s.pool.Query(ctx, query, from, channelHealthRecentLimit)
+	rows, err := s.db.WithContext(ctx).Raw(query, from, channelHealthRecentLimit).Rows()
 	if err != nil {
 		return fmt.Errorf("查询渠道最近请求失败: %w", err)
 	}
@@ -232,7 +232,7 @@ func (s *Store) attachChannelLastError(
 		  AND error_detail IS NOT NULL
 		ORDER BY channel_id, ts DESC`
 
-	rows, err := s.pool.Query(ctx, query)
+	rows, err := s.db.WithContext(ctx).Raw(query).Rows()
 	if err != nil {
 		return fmt.Errorf("查询渠道最近错误失败: %w", err)
 	}
@@ -479,7 +479,7 @@ func (s *Store) errorBuckets(ctx context.Context, from, to time.Time) ([]ErrorBu
 		ORDER BY count DESC
 		LIMIT 8`
 
-	rows, err := s.pool.Query(ctx, query, from, to)
+	rows, err := s.db.WithContext(ctx).Raw(query, from, to).Rows()
 	if err != nil {
 		return nil, fmt.Errorf("查询错误分布失败: %w", err)
 	}
@@ -518,7 +518,7 @@ func (s *Store) latencyPercentiles(ctx context.Context, from, to time.Time) (Lat
 
 	var out LatencyPercentiles
 	var p50t, p95t, p99t, p50l, p95l, p99l *float64
-	if err := s.pool.QueryRow(ctx, query, from, to).Scan(
+	if err := s.db.WithContext(ctx).Raw(query, from, to).Row().Scan(
 		&out.Sample, &p50t, &p95t, &p99t, &p50l, &p95l, &p99l,
 	); err != nil {
 		return out, fmt.Errorf("查询延迟分位失败: %w", err)
@@ -590,7 +590,7 @@ func (s *Store) totalsBetween(ctx context.Context, from, to time.Time) (*Dashboa
 	var totals DashboardTotals
 	var avgTtft, avgLatency *float64
 
-	err := s.pool.QueryRow(ctx, fmt.Sprintf(`
+	err := s.db.WithContext(ctx).Raw(fmt.Sprintf(`
 		SELECT count(*),
 		       COALESCE(avg(CASE WHEN status = 'completed' THEN 1.0 ELSE 0.0 END), 0)::float8,
 		       COALESCE(sum(prompt_tokens), 0),
@@ -602,7 +602,7 @@ func (s *Store) totalsBetween(ctx context.Context, from, to time.Time) (*Dashboa
 		       avg(ttft_ms)::float8,
 		       avg(total_ms)::float8
 		FROM usage_logs %s`, where), args...,
-	).Scan(
+	).Row().Scan(
 		&totals.Requests, &totals.SuccessRate,
 		&totals.PromptTokens, &totals.CompletionTokens, &totals.TotalTokens,
 		&totals.CachedTokens, &totals.UpstreamCost, &totals.BilledCost,
@@ -645,7 +645,7 @@ func (s *Store) bucketsBetween(
 		ORDER BY 2 DESC
 		LIMIT 20`, column, where)
 
-	rows, err := s.pool.Query(ctx, query, args...)
+	rows, err := s.db.WithContext(ctx).Raw(query, args...).Rows()
 	if err != nil {
 		return nil, fmt.Errorf("分组统计失败: %w", err)
 	}
@@ -683,7 +683,7 @@ func (s *Store) protocolBuckets(
 	args = append(args, to)
 	where += fmt.Sprintf(" AND ts <= $%d", len(args))
 
-	rows, err := s.pool.Query(ctx, fmt.Sprintf(`
+	rows, err := s.queryRows(ctx, fmt.Sprintf(`
 		SELECT protocol, count(*), COALESCE(sum(total_tokens), 0)
 		FROM usage_logs %s
 		GROUP BY 1
@@ -691,7 +691,7 @@ func (s *Store) protocolBuckets(
 	if err != nil {
 		return nil, fmt.Errorf("协议分组失败: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	buckets := make([]ProtocolBucket, 0, 3)
 	for rows.Next() {
@@ -746,7 +746,7 @@ func (s *Store) ListAccountUsage(ctx context.Context) (map[string]AccountUsage, 
 		WHERE NOT is_rejection
 		GROUP BY channel_id, account_uid`
 
-	rows, err := s.pool.Query(ctx, query)
+	rows, err := s.db.WithContext(ctx).Raw(query).Rows()
 	if err != nil {
 		return nil, fmt.Errorf("查询账号用量失败: %w", err)
 	}
