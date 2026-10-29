@@ -5,9 +5,12 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
+
+	"relayai/backend/internal/models"
 )
 
 // APIKey 是密钥的管理面视图。**永不包含明文**（SPEC I2）。
@@ -37,7 +40,7 @@ type KeyInput struct {
 	//
 	// 为空表示"没有归属"，那种 Key 产生的用量扣不到任何人头上 ——
 	// 结算时会跳过，表现为"消费了但余额没少"。
-	UserID          int64           `json:"userId"`
+	UserID          int64    `json:"userId"`
 	Name            string   `json:"name"`
 	ChannelAllow    []string `json:"channelAllow"`
 	ModelAllow      []string `json:"modelAllow"`
@@ -46,14 +49,39 @@ type KeyInput struct {
 	MaxConcurrency  *int     `json:"maxConcurrency"`
 	Enabled         *bool    `json:"enabled"`
 	ExpiresAt       *string  `json:"expiresAt"`
+	fields          map[string]json.RawMessage
+}
+
+// UnmarshalJSON distinguishes omitted PATCH fields from explicit null resets.
+func (input *KeyInput) UnmarshalJSON(data []byte) error {
+	type plain KeyInput
+	var decoded plain
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	*input = KeyInput(decoded)
+	input.fields = fields
+	return nil
+}
+
+func (input KeyInput) hasField(name string, provided bool) bool {
+	if input.fields != nil {
+		_, exists := input.fields[name]
+		return exists
+	}
+	return provided
 }
 
 // ListKeys 返回全部密钥。
 func (s *Store) ListKeys(ctx context.Context) ([]APIKey, error) {
 	const query = `
 		SELECT id, name, key_prefix,
-		       COALESCE(channel_allow, ARRAY[]::text[]),
-		       COALESCE(model_allow, ARRAY[]::text[]),
+		       COALESCE(channel_allow, ARRAY[]::text[]) AS channel_allow,
+		       COALESCE(model_allow, ARRAY[]::text[]) AS model_allow,
 		       rpm_limit, daily_token_limit, max_concurrency, enabled,
 		       expires_at, last_used_at, created_at, key_plaintext
 		FROM api_keys ORDER BY created_at DESC`
@@ -106,12 +134,12 @@ func (s *Store) CreateKey(ctx context.Context, input KeyInput) (*APIKey, string,
 		RETURNING id, created_at`
 
 	var created struct {
-		ID        int64 `gorm:"column:id"`
+		ID        int64     `gorm:"column:id"`
 		CreatedAt time.Time `gorm:"column:created_at"`
 	}
 	if err := s.queryOne(ctx, &created, query,
 		input.Name, hash, prefix, plaintext,
-		emptyToNil(input.ChannelAllow), emptyToNil(input.ModelAllow),
+		models.TextArray(emptyToNil(input.ChannelAllow)), models.TextArray(emptyToNil(input.ModelAllow)),
 		input.RPMLimit, input.DailyTokenLimit, input.MaxConcurrency,
 		enabled, input.ExpiresAt, nullableUserID(input.UserID),
 	); err != nil {
@@ -140,29 +168,44 @@ func (s *Store) CreateKey(ctx context.Context, input KeyInput) (*APIKey, string,
 
 // UpdateKey 更新密钥。
 func (s *Store) UpdateKey(ctx context.Context, id int64, input KeyInput) (*APIKey, error) {
-	const query = `
-		UPDATE api_keys SET
-		    name = COALESCE(NULLIF($2, ''), name),
-		    channel_allow = $3,
-		    model_allow = $4,
-		    rpm_limit = $5,
-		    daily_token_limit = $6,
-		    max_concurrency = $7,
-		    enabled = COALESCE($8, enabled),
-		    expires_at = $9
-		WHERE id = $1`
-
-	affected, err := s.exec(ctx, query,
-		id, input.Name,
-		emptyToNil(input.ChannelAllow), emptyToNil(input.ModelAllow),
-		input.RPMLimit, input.DailyTokenLimit, input.MaxConcurrency,
-		input.Enabled, input.ExpiresAt,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("更新密钥失败: %w", err)
+	sets := make([]string, 0, 8)
+	args := []any{id}
+	add := func(column string, value any) {
+		args = append(args, value)
+		sets = append(sets, fmt.Sprintf("%s = $%d", column, len(args)))
 	}
-	if affected == 0 {
-		return nil, ErrNotFound
+	if input.hasField("name", input.Name != "") && strings.TrimSpace(input.Name) != "" {
+		add("name", strings.TrimSpace(input.Name))
+	}
+	if input.hasField("channelAllow", input.ChannelAllow != nil) {
+		add("channel_allow", models.TextArray(emptyToNil(input.ChannelAllow)))
+	}
+	if input.hasField("modelAllow", input.ModelAllow != nil) {
+		add("model_allow", models.TextArray(emptyToNil(input.ModelAllow)))
+	}
+	if input.hasField("rpmLimit", input.RPMLimit != nil) {
+		add("rpm_limit", input.RPMLimit)
+	}
+	if input.hasField("dailyTokenLimit", input.DailyTokenLimit != nil) {
+		add("daily_token_limit", input.DailyTokenLimit)
+	}
+	if input.hasField("maxConcurrency", input.MaxConcurrency != nil) {
+		add("max_concurrency", input.MaxConcurrency)
+	}
+	if input.hasField("enabled", input.Enabled != nil) && input.Enabled != nil {
+		add("enabled", input.Enabled)
+	}
+	if input.hasField("expiresAt", input.ExpiresAt != nil) {
+		add("expires_at", input.ExpiresAt)
+	}
+	if len(sets) > 0 {
+		affected, err := s.exec(ctx, "UPDATE api_keys SET "+strings.Join(sets, ", ")+" WHERE id = $1", args...)
+		if err != nil {
+			return nil, fmt.Errorf("更新密钥失败: %w", err)
+		}
+		if affected == 0 {
+			return nil, ErrNotFound
+		}
 	}
 
 	list, err := s.ListKeys(ctx)
@@ -220,8 +263,8 @@ func (s *Store) ResolveKey(ctx context.Context, plaintext string) (*APIKey, erro
 
 	const query = `
 		SELECT id, name, key_prefix,
-		       COALESCE(channel_allow, ARRAY[]::text[]),
-		       COALESCE(model_allow, ARRAY[]::text[]),
+		       COALESCE(channel_allow, ARRAY[]::text[]) AS channel_allow,
+		       COALESCE(model_allow, ARRAY[]::text[]) AS model_allow,
 		       rpm_limit, daily_token_limit, max_concurrency, enabled,
 		       expires_at, last_used_at, created_at
 		FROM api_keys WHERE key_hash = $1`
