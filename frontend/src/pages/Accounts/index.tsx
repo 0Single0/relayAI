@@ -450,7 +450,7 @@ export const AccountsPage = () => {
       {
         key: "today",
         header: "今日",
-        width: "116px",
+        width: "152px",
         align: "center",
         hideOnMobile: true,
         render: (account) => {
@@ -459,7 +459,7 @@ export const AccountsPage = () => {
             return <span className="text-xs text-muted-foreground">—</span>;
           }
           return (
-            <div className="flex flex-col items-end leading-4">
+            <div className="flex min-w-24 flex-col items-end whitespace-nowrap leading-4">
               <span className="tabular-nums">
                 {usage.todayRequests.toLocaleString("zh-CN")} 次
               </span>
