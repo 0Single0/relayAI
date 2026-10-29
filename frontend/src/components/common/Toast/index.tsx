@@ -76,7 +76,7 @@ export const ToastViewport = () => {
         `top-11` = 44px：浮在 56px 页头上方，即遮住页头下部、保留顶部。
         再高（比页头还靠上）会盖到浏览器边缘；再低则重新挤回内容区。
       */
-      className="pointer-events-none fixed top-11 left-1/2 z-50 flex w-[min(24rem,calc(100vw-2rem))] -translate-x-1/2 flex-col gap-2"
+      className="pointer-events-none fixed top-11 left-1/2 z-60 flex w-[min(24rem,calc(100vw-2rem))] -translate-x-1/2 flex-col gap-2"
     >
       {items.map((item) => {
         const { icon: Icon } = TONE_STYLE[item.tone];

@@ -17,6 +17,8 @@ import {
 } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
 import { getRequestErrorMessage } from "@/utils/request";
+import { copyText } from "@/utils/clipboard";
+import { toast } from "@/components/common/Toast/store";
 
 const formatMoney = (value: number) => `¥${value.toFixed(2)}`;
 
@@ -68,13 +70,14 @@ export const RedeemCodesPage = () => {
 
   const copy = async (text: string) => {
     try {
-      await navigator.clipboard.writeText(text);
+      await copyText(text);
       setCopied(text);
+      toast.success("复制成功");
       // 2 秒后复位图标：一直显示"已复制"会让人分不清哪一个刚复制。
       window.setTimeout(() => setCopied(""), 2000);
     } catch {
-      // 剪贴板被浏览器拒绝（非安全上下文）时选中文本作为退路。
       setCopied("");
+      toast.error("复制失败", "请选中兑换码后手动复制");
     }
   };
 
@@ -285,6 +288,15 @@ const CreateCodesDialog = ({
 
   const createdText = created.map((code) => code.code).join("\n");
 
+  const copyCreated = async () => {
+    try {
+      await copyText(createdText);
+      toast.success("复制成功");
+    } catch {
+      toast.error("复制失败", "请选中兑换码后手动复制");
+    }
+  };
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-md">
@@ -338,7 +350,7 @@ const CreateCodesDialog = ({
                 <Button
                   variant="ghost"
                   size="xs"
-                  onClick={() => void navigator.clipboard.writeText(createdText)}
+                  onClick={() => void copyCreated()}
                 >
                   <Copy aria-hidden="true" />
                   全部复制

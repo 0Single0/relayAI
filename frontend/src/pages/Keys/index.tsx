@@ -40,6 +40,7 @@ import { toast } from "@/components/common/Toast/store";
 import { compactNumber } from "@/lib/charts";
 import { cn } from "@/lib/utils";
 import { getRequestErrorMessage } from "@/utils/request";
+import { copyText } from "@/utils/clipboard";
 
 /**
  * 密钥管理。
@@ -135,11 +136,13 @@ export const KeysPage = () => {
       return;
     }
     try {
-      await navigator.clipboard.writeText(key.plaintext);
+      await copyText(key.plaintext);
       setCopied(key.id);
+      toast.success("复制成功");
       window.setTimeout(() => setCopied(null), 1500);
     } catch {
       setCopied(null);
+      toast.error("复制失败", "请选中密钥后手动复制");
     }
   }, []);
 
