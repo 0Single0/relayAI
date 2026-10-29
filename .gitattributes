@@ -1,4 +1,5 @@
 deploy/docker/*.sh text eol=lf
+scripts/*.sh text eol=lf
 deploy/docker/*.Dockerfile text eol=lf
 deploy/docker/*.conf text eol=lf
 deploy/docker/*.yaml text eol=lf

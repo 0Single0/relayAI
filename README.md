@@ -2,6 +2,8 @@
 
 自用的 AI 反代网关 + 管理台。
 
+从 dynamic-island-web 迁移已有账号及登录凭据，参见 [账号迁移说明](docs/legacy-account-import.md)。
+
 - **网关**（Rust）：对下游暴露 OpenAI Chat Completions / OpenAI Responses / Anthropic Messages 三种协议入口；对上游调度 WorkBuddy / Trae / 自定义渠道商的账号池。
 - **管理台**（Go + React）：渠道、账号、密钥、用量、任务、设置。
 
