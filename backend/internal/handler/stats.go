@@ -5,7 +5,9 @@ import (
 	"strconv"
 	"time"
 
+	"relayai/backend/internal/gateway"
 	"relayai/backend/internal/httpx"
+	"relayai/backend/internal/store"
 	"relayai/backend/internal/svc"
 )
 
@@ -56,20 +58,35 @@ func registerStats(mux *http.ServeMux, ctx *svc.ServiceContext) {
 		// 补上网关的运行态。网关不可用时静默跳过：卡片仍要能显示历史统计，
 		// 只是"可用账号"一栏变成未知。
 		if status, err := ctx.Gateway.GetStatus(r.Context()); err == nil && status != nil {
-			ready := make(map[string]int, len(status.Channels))
-			for _, channel := range status.Channels {
-				ready[channel.ID] = channel.Ready
-			}
-			for position := range list {
-				if count, ok := ready[list[position].ID]; ok {
-					value := count
-					list[position].ReadyAccounts = &value
-				}
-			}
+			attachChannelRuntime(list, status)
 		}
 
 		httpx.OK(w, list)
 	})
+}
+
+// attachChannelRuntime 按账号的真实分组汇总可用数。
+// status.Channels 来自平台适配器注册表（如 workbuddy），不能用它匹配
+// 用户分组（如 wb-cn / wb-intl），也不能把同平台的账号数复制到各分组。
+// 网关运行时，未加载账号的分组可用数为 0；只有离线时才保留未知值。
+func attachChannelRuntime(list []store.ChannelHealth, status *gateway.Status) {
+	for position := range list {
+		list[position].ReadyAccounts = nil
+	}
+	if status == nil || !status.Running {
+		return
+	}
+
+	ready := make(map[string]int)
+	for _, account := range status.Accounts {
+		if account.Enabled && account.Ready {
+			ready[account.ChannelID]++
+		}
+	}
+	for position := range list {
+		count := ready[list[position].ID]
+		list[position].ReadyAccounts = &count
+	}
 }
 
 // parseTimeQuery 读 ISO 8601 时间参数；缺省或非法时用 fallback。
