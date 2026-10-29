@@ -1,5 +1,6 @@
-# syntax=docker/dockerfile:1
 FROM node:24-bookworm-slim AS build
+ARG NPM_REGISTRY=https://registry.npmjs.org
+ENV npm_config_registry=$NPM_REGISTRY
 RUN npm install --global pnpm@11.21.0
 WORKDIR /src/frontend
 COPY frontend/package.json frontend/pnpm-lock.yaml ./

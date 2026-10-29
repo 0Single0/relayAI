@@ -140,6 +140,8 @@ go build ./...
 
 ## Working rules
 
+- Git: after completing each modification (a coherent change), commit it once. Do not batch multiple unrelated changes into one commit; write a concise commit message describing the change.
+
 - Do not spawn subagents unless the user explicitly authorizes delegation.
 - Do not add a database, authentication provider, or external integration without an explicit requirement.
 - Keep `README.md` commands and ports accurate when configuration changes.

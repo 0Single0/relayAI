@@ -136,6 +136,38 @@ Compose 使用 `data/secrets/` 中的独立密钥和容器内数据库，不读�
 docker compose up -d --build
 ```
 
+### 镜像拉取失败（Docker Hub EOF / 超时）
+
+`Get "https://registry-1.docker.io/v2/": EOF` 表示这次镜像仓库请求的连接中断，发生在应用启动之前。其他项目能启动时，也可能是使用了本机已缓存的镜像，不代表本次使用的不同镜像标签能拉取成功。先确认本机已有镜像，再单独检查本项目使用的标签：
+
+```sh
+sudo docker image ls
+sudo docker pull postgres:16-alpine
+curl -I --connect-timeout 10 --max-time 20 https://registry-1.docker.io/v2/
+```
+
+若服务器已经有其他项目使用的 PostgreSQL 16 镜像，可在根目录 `.env` 中指定同一标签，例如 `POSTGRES_IMAGE=postgres:16.9-bookworm`。这只复用镜像，relayAI 仍使用独立的 `data/postgres/` 数据目录，不连接其他项目的数据库。
+
+Compose 已为本地构建的服务设置 `pull_policy: build`，避免尝试从镜像仓库下载项目自己的镜像。三个 Dockerfile 使用 BuildKit 内置语法，减少额外拉取 `docker/dockerfile` 前端镜像的需要。
+
+Rust、Go、Node 依赖下载和 Docker 镜像拉取是不同的网络请求。Compose 默认分别使用 rsproxy、goproxy.cn、npmmirror；可在 `.env` 中覆盖构建参数：
+
+```dotenv
+CARGO_MIRROR=sparse+https://rsproxy.cn/index/
+GOPROXY=https://goproxy.cn,direct
+NPM_REGISTRY=https://registry.npmmirror.com
+```
+
+如需使用官方依赖源，设置 `CARGO_MIRROR=`、`GOPROXY=https://proxy.golang.org,direct`、`NPM_REGISTRY=https://registry.npmjs.org`。修改这些配置后执行 `sudo docker compose up -d --build`。
+
+Docker Hub 的 `/v2/` 返回 HTTP 401 是正常的鉴权挑战，说明这次 HTTP 请求已到达仓库；EOF 或超时则需要检查服务器网络、DNS、Docker 的代理或镜像加速配置。即使 `curl` 成功，也应以 `docker pull` 是否成功为准，因为 Docker 守护进程和当前终端的代理配置可能不同。
+
+确认缺失的基础镜像确实无法拉取后，再检查 Docker 的镜像加速配置。国内服务器可使用云厂商为该服务器提供的加速地址。例如腾讯云 CVM 可先检查 `https://mirror.ccs.tencentyun.com/v2/` 是否可达，再将该地址加入 `/etc/docker/daemon.json` 的 `registry-mirrors` 数组。保留文件中其他配置，校验后重启 Docker，再重试 `sudo docker pull postgres:16-alpine` 和 `sudo docker compose up -d`。重启 Docker 会影响该机器上的其他容器。
+
+镜像加速需要覆盖 `postgres` 及 Dockerfile 使用的 Go、Rust、Node、Debian、Nginx 基础镜像，只替换 PostgreSQL 镜像地址不足以完成构建。项目自己的 `relayai-*:local` 镜像已设置 `pull_policy: build`，由本地源码构建。
+
+`connect: permission denied` 通常表示当前用户无权访问 Docker socket。可先使用 `sudo docker ...`；需要免 sudo 时，由管理员将当前用户加入 `docker` 组并重新登录。这个权限问题与镜像仓库的 EOF 需要分别处理。
+
 ## 本地开发启动
 
 ### 1. 建库

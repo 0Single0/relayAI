@@ -1,5 +1,6 @@
-# syntax=docker/dockerfile:1
 FROM golang:1.25-bookworm AS build
+ARG GOPROXY=https://proxy.golang.org,direct
+ENV GOPROXY=$GOPROXY
 WORKDIR /src/backend
 COPY backend/go.mod backend/go.sum ./
 RUN --mount=type=cache,target=/go/pkg/mod go mod download
