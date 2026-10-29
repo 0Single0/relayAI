@@ -8,6 +8,8 @@
 
 use std::sync::Arc;
 
+mod account_models;
+
 use axum::{
     extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
@@ -46,6 +48,7 @@ pub fn router(state: SharedGateway, token: String) -> Router<SharedGateway> {
         .route("/internal/channels/{id}/probe", post(probe_channel))
         .route("/internal/accounts", post(create_account))
         .route("/internal/accounts/{key}/refresh", post(refresh_account))
+        .route("/internal/accounts/{key}/models", get(account_models::get))
         .route("/internal/accounts/{key}/probe", post(probe_account))
         // 同一路径挂 GET + POST：GET 读内存快照，POST 强制打上游刷新。
         .route(

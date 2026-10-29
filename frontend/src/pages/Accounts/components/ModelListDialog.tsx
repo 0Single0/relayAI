@@ -2,11 +2,10 @@ import { useMemo, useState } from "react";
 import { ChevronDown } from "lucide-react";
 import type { Account } from "@/api/types";
 import type { CatalogModel } from "@/api/catalog";
-import { formatRemaining } from "@/pages/Accounts/components/formatRemaining";
+import { AccountModelCard } from "./AccountModelCard";
+import { WorkbuddyModelList } from "./WorkbuddyModelList";
 import {
   activeLimits,
-  compactTokens,
-  modelCapabilities,
   usableModels,
 } from "@/pages/Accounts/components/modelCaps";
 import {
@@ -30,67 +29,6 @@ import { cn } from "@/lib/utils";
  * 一眼能判断"这个模型现在能不能用、适合什么活"。
  */
 
-/** 一张模型卡。 */
-const ModelCard = ({
-  model,
-  untilMs,
-  now,
-}: {
-  model: CatalogModel;
-  /** 非空表示这个模型正被上游限流。 */
-  untilMs?: number;
-  now: number;
-}) => {
-  const limited = untilMs !== undefined && untilMs > now;
-  const caps = modelCapabilities(model);
-
-  return (
-    <div
-      className={cn(
-        "flex flex-col gap-1 rounded-lg border px-2.5 py-2",
-        limited ? "border-warning/40 bg-warning/5" : "bg-card",
-      )}
-      title={
-        limited
-          ? `该模型被上游限流，${formatRemaining(untilMs - now)} 后恢复（同账号其他模型不受影响）`
-          : undefined
-      }
-    >
-      <div className="flex items-center gap-1.5">
-        <span className="min-w-0 flex-1 truncate font-mono text-xs font-medium">
-          {model.name}
-        </span>
-        {limited ? (
-          <span className="shrink-0 rounded bg-warning/20 px-1 text-[10px] text-warning">
-            限流 {formatRemaining(untilMs - now)}
-          </span>
-        ) : null}
-      </div>
-
-      <div className="flex flex-wrap items-center gap-1 text-[10px] text-muted-foreground">
-        <span title="上下文窗口">上下文 {compactTokens(model.contextWindow)}</span>
-        <span aria-hidden="true">·</span>
-        <span title="单次最大输出">输出 {compactTokens(model.maxOutput)}</span>
-        {caps.map((cap) => (
-          <span key={cap} className="rounded bg-muted px-1 text-foreground/80">
-            {cap}
-          </span>
-        ))}
-      </div>
-
-      <div className="text-[10px]">
-        {model.priced ? (
-          <span className="text-muted-foreground tabular-nums">
-            ${model.inputPrice} / ${model.outputPrice}
-          </span>
-        ) : (
-          <span className="rounded bg-muted px-1 text-muted-foreground">未定价</span>
-        )}
-      </div>
-    </div>
-  );
-};
-
 /** 「模型」列里的按钮：显示数量，点击开弹窗。 */
 export const ModelListButton = ({
   account,
@@ -104,8 +42,9 @@ export const ModelListButton = ({
   const [now] = useState(() => Date.now());
   const models = useMemo(() => usableModels(account, catalog), [account, catalog]);
   const limits = activeLimits(account, now);
+  const isWorkbuddy = (account.platform || account.adapter) === "workbuddy";
 
-  if (models.length === 0) {
+  if (models.length === 0 && !isWorkbuddy) {
     return (
       <span
         className="text-xs text-muted-foreground"
@@ -120,7 +59,7 @@ export const ModelListButton = ({
     <button
       type="button"
       onClick={onOpen}
-      title="查看模型清单与限流情况"
+      title={isWorkbuddy ? "实时查询账号支持的模型与官方积分规则" : "查看模型清单与限流情况"}
       className={cn(
         "inline-flex cursor-pointer items-center gap-1 text-xs transition-colors",
         limits.length > 0 ? "text-warning hover:text-warning/80" : "hover:text-foreground",
@@ -128,7 +67,7 @@ export const ModelListButton = ({
       )}
     >
       <span>
-        {models.length} 个
+        {isWorkbuddy ? "查看模型" : `${models.length} 个`}
         {limits.length > 0 ? ` · ${limits.length} 限流` : ""}
       </span>
       {limits.length > 0 ? (
@@ -157,6 +96,7 @@ export const ModelListDialog = ({
   );
   const limits = account ? activeLimits(account, now) : [];
   const limitedCount = limits.length;
+  const isWorkbuddy = account !== null && (account.platform || account.adapter) === "workbuddy";
 
   return (
     <Dialog open={account !== null} onOpenChange={(next) => !next && onClose()}>
@@ -165,7 +105,7 @@ export const ModelListDialog = ({
           <DialogTitle>账号支持的模型</DialogTitle>
           <DialogDescription>
             {account
-              ? `${account.nickname || account.uid} · 共 ${models.length} 个${
+              ? isWorkbuddy ? `${account.nickname || account.uid} · 官方积分规则` : `${account.nickname || account.uid} · 共 ${models.length} 个${
                   limitedCount > 0 ? `，其中 ${limitedCount} 个正被上游限流` : ""
                 }`
               : ""}
@@ -173,13 +113,13 @@ export const ModelListDialog = ({
         </DialogHeader>
         <p className="text-xs text-muted-foreground">这里展示账号自身支持的模型；对外调用还需分配分组，并由分组开放对应模型。</p>
 
-        {limitedCount > 0 ? (
+        {!isWorkbuddy && limitedCount > 0 ? (
           <p className="rounded-md border border-warning/30 bg-warning/5 px-2.5 py-1.5 text-[11px] text-warning">
             上游按模型限额：标黄的那些暂时不可用，其余模型照常服务 —— 账号本身没问题。
           </p>
         ) : null}
 
-        {models.length === 0 ? (
+        {isWorkbuddy && account ? <WorkbuddyModelList key={account.id} account={account} /> : models.length === 0 ? (
           <p className="py-6 text-center text-xs text-muted-foreground">
             尚未获取到账号模型。自定义供应商可在编辑账号中添加或获取模型列表。
           </p>
@@ -188,7 +128,7 @@ export const ModelListDialog = ({
             {models.map((model) => {
               const limit = limits.find((item) => item.model === model.name);
               return (
-                <ModelCard
+                <AccountModelCard
                   key={model.name}
                   model={model}
                   untilMs={limit?.untilMs}

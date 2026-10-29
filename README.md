@@ -6,6 +6,8 @@
 
 模型广场的内置价格、官方来源、币种和计费档位，参见 [内置模型价格说明](docs/builtin-model-prices.md)。
 
+WorkBuddy 账号模型的免费状态、官方积分倍率及实时查询方式，参见 [账号模型与官方积分规则](docs/workbuddy-live-models.md)。
+
 - **网关**（Rust）：对下游暴露 OpenAI Chat Completions / OpenAI Responses / Anthropic Messages 三种协议入口；对上游调度 WorkBuddy / Trae / 自定义渠道商的账号池。
 - **管理台**（Go + React）：渠道、账号、密钥、用量、任务、设置。
 

@@ -19,6 +19,7 @@ import (
 // registerAccounts 注册账号相关路由。
 func registerAccounts(mux *http.ServeMux, ctx *svc.ServiceContext) {
 	registerModelDiscovery(mux, ctx)
+	registerAccountModels(mux, ctx)
 	mux.HandleFunc("GET /accounts", func(w http.ResponseWriter, r *http.Request) {
 		query := store.AccountQuery{
 			ChannelID: r.URL.Query().Get("channelId"),

@@ -73,7 +73,7 @@ export const compactTokens = (value: number | null | undefined): string => {
 };
 
 /** 能力徽标：只列声明为 true 的，用中文而不是字段名。 */
-export const modelCapabilities = (model: CatalogModel): string[] => {
+export const modelCapabilities = (model: Pick<CatalogModel, "capabilities">): string[] => {
   const caps = model.capabilities;
   if (!caps) {
     return [];

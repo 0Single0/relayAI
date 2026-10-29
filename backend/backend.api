@@ -60,6 +60,34 @@ type ModelDiscoveryResponse {
 	Data []DiscoveredModel `json:"data"`
 }
 
+type AccountModelsRequest {
+	ID int64 `path:"id"`
+}
+
+type LiveAccountModel {
+	ID string `json:"id"`
+	DisplayName interface{} `json:"displayName"` // string | null
+	ContextWindow interface{} `json:"contextWindow"` // integer | null
+	MaxOutput interface{} `json:"maxOutput"` // integer | null
+	Capabilities map[string]bool `json:"capabilities"`
+	Credits interface{} `json:"credits"` // official text | null
+	CreditMultiplier interface{} `json:"creditMultiplier"` // number | null
+	ChargeType string `json:"chargeType"` // free | credits | unknown
+}
+
+type LiveAccountModels {
+	Realm string `json:"realm"` // cn | intl
+	FetchedAtMs int64 `json:"fetchedAtMs"`
+	Models []LiveAccountModel `json:"models"`
+}
+
+type AccountModelsResponse {
+	Code int `json:"code"`
+	Success bool `json:"success"`
+	Msg string `json:"msg,optional"`
+	Data LiveAccountModels `json:"data"`
+}
+
 @server (
 	prefix: /api/v1
 )
@@ -69,4 +97,8 @@ service backend-api {
 
 	@handler ModelDiscoveryHandler
 	post /model-discoveries (ModelDiscoveryRequest) returns (ModelDiscoveryResponse)
+
+	// Admin-only, account-scoped upstream query; Cache-Control: no-store.
+	@handler AccountModelsHandler
+	get /accounts/:id/models (AccountModelsRequest) returns (AccountModelsResponse)
 }

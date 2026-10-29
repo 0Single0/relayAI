@@ -26,6 +26,7 @@ pub async fn growth_snapshot(
 }
 pub mod tasks;
 pub mod catalog;
+pub mod live_models;
 pub mod hygiene;
 pub mod identity;
 
@@ -108,6 +109,15 @@ impl WorkbuddyChannel {
             // 国际版目录与国内版差异较大，没有经过验证的快照就不编造。
             Realm::Intl => Vec::new(),
         }
+    }
+
+    pub async fn live_models(
+        &self,
+        client: &reqwest::Client,
+        account: &AccountSnapshot,
+    ) -> Result<live_models::LiveModelCatalog, GatewayError> {
+        let (realm, _, hosts) = self.identity_for(account);
+        live_models::fetch(client, &hosts, realm, account).await
     }
 }
 
