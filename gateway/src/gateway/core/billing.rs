@@ -68,33 +68,16 @@ impl PriceBook {
 
     /// 按模型名找价格。
     ///
-    /// 匹配顺序：精确 → 前缀（取最长）。
-    /// 前缀是为了兼容上游的日期后缀（`gpt-4o-mini-2024-07-18`）；
-    /// 取最长是避免 `gpt-4o` 抢走 `gpt-4o-mini` 的价格 ——
-    /// 两者差 16 倍，抢错了账会错得离谱。
+    /// 只做忽略大小写的精确匹配，与管理面的内置价格填充一致。
+    /// 日期版本、服务档位和路由变体可能有不同价格，必须单独定价；
+    /// 不能让未定价型号在记账时又继承相似型号的价格。
     pub fn lookup(&self, model: &str) -> Option<ModelPrice> {
         let name = model.trim().to_lowercase();
         if name.is_empty() {
             return None;
         }
 
-        if let Some(price) = self.prices.get(&name) {
-            return Some(*price);
-        }
-
-        let mut best: Option<(&str, ModelPrice)> = None;
-        for (key, price) in &self.prices {
-            if name.starts_with(key.as_str()) {
-                let better = match best {
-                    Some((current, _)) => key.len() > current.len(),
-                    None => true,
-                };
-                if better {
-                    best = Some((key.as_str(), *price));
-                }
-            }
-        }
-        best.map(|(_, price)| price)
+        self.prices.get(&name).copied()
     }
 }
 
@@ -173,14 +156,23 @@ mod tests {
     }
 
     #[test]
-    fn prefix_match_prefers_longest_key() {
+    fn prices_require_an_explicit_model_id() {
         let book = price_book();
-        // `gpt-4o-mini-2024-07-18` 必须命中 mini，不能被 `gpt-4o` 抢走。
-        let found = book.lookup("gpt-4o-mini-2024-07-18").expect("应当命中");
+        let found = book.lookup(" GPT-4O-MINI ").expect("应当命中");
         assert!((found.input - 1.0).abs() < 1e-9, "命中了错误的模型：{found:?}");
 
-        let plain = book.lookup("gpt-4o-2024-08-06").expect("应当命中");
+        let plain = book.lookup("gpt-4o").expect("应当命中");
         assert!((plain.input - 18.0).abs() < 1e-9);
+        // The 2024-05-13 version has a different official price from gpt-4o.
+        for model in ["gpt-4o-2024-05-13", "gpt-4o-mini-2099-01-01", "gpt-4o-unpublished"] {
+            assert!(book.lookup(model).is_none(), "must not infer a price for {model}");
+        }
+
+        let mut prices = HashMap::new();
+        prices.insert("gpt-4o".into(), ModelPrice { input: 2.5, ..ModelPrice::default() });
+        prices.insert("gpt-4o-2024-05-13".into(), ModelPrice { input: 5.0, ..ModelPrice::default() });
+        let book = PriceBook::new(prices);
+        assert_eq!(book.lookup("gpt-4o-2024-05-13").unwrap().input, 5.0);
     }
 
     #[test]

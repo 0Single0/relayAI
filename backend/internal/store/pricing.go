@@ -20,102 +20,9 @@ type ModelPrice struct {
 	CacheRead float64
 }
 
-// BuiltinPrices 是内置价格表（**美元 / 百万 token**，按主流厂商公开定价）。
-//
-// 为什么内置一份：网关同步过来的目录只有模型名与能力，没有价格 ——
-// 上游不会告诉你"这个模型多少钱"。没有默认值时，新同步的模型全是"未定价"，
-// 计费恒为 0，用户以为系统在记账其实没有。
-//
-// **价格以官方定价为准，人工维护。** 这些数字来自各厂商公开的定价页。
-//
-// 为什么不让 OpenRouter 主导：实测它拉下来的价格与官方牌价有偏差
-// （它自己的加价、缓存价缺失、以及把一些模型标成离谱的低价/高价）。
-// 计费按它算会让账单莫名其妙，所以：
-//   - **内置表（官方价）是默认来源**，同步时自动填"从未定价"的模型；
-//   - OpenRouter 降级为**参考**，管理员可手动触发，但需要自己复核；
-//   - 最终以管理员手工编辑为准。
-//
-// 币种是美元，落库时由调用方按汇率折算成元 —— 汇率也做成可配置，
-// 否则写死一个数字，半年后整张表都偏了。
-var BuiltinPrices = map[string]ModelPrice{
-	// ---- OpenAI ----
-	"gpt-5":            {Input: 1.25, Output: 10, CacheRead: 0.125},
-	"gpt-5-mini":       {Input: 0.25, Output: 2, CacheRead: 0.025},
-	"gpt-5-nano":       {Input: 0.05, Output: 0.4, CacheRead: 0.005},
-	"gpt-4.1":          {Input: 2, Output: 8, CacheRead: 0.5},
-	"gpt-4.1-mini":     {Input: 0.4, Output: 1.6, CacheRead: 0.1},
-	"gpt-4.1-nano":     {Input: 0.1, Output: 0.4, CacheRead: 0.025},
-	"gpt-4o":           {Input: 2.5, Output: 10, CacheRead: 1.25},
-	"gpt-4o-mini":      {Input: 0.15, Output: 0.6, CacheRead: 0.075},
-	"o3":               {Input: 2, Output: 8, CacheRead: 0.5},
-	"o3-mini":          {Input: 1.1, Output: 4.4, CacheRead: 0.55},
-	"o4-mini":          {Input: 1.1, Output: 4.4, CacheRead: 0.275},
-
-	// ---- Anthropic ----
-	"claude-opus-4":     {Input: 15, Output: 75, CacheRead: 1.5},
-	"claude-sonnet-4":   {Input: 3, Output: 15, CacheRead: 0.3},
-	"claude-3-7-sonnet": {Input: 3, Output: 15, CacheRead: 0.3},
-	"claude-3-5-sonnet": {Input: 3, Output: 15, CacheRead: 0.3},
-	"claude-3-5-haiku":  {Input: 0.8, Output: 4, CacheRead: 0.08},
-
-	// ---- Google ----
-	"gemini-2.5-pro":   {Input: 1.25, Output: 10, CacheRead: 0.31},
-	"gemini-2.5-flash": {Input: 0.3, Output: 2.5, CacheRead: 0.075},
-
-	// ---- DeepSeek ----
-	"deepseek-v3":      {Input: 0.27, Output: 1.1, CacheRead: 0.07},
-	"deepseek-v3.1":    {Input: 0.27, Output: 1.1, CacheRead: 0.07},
-	"deepseek-r1":      {Input: 0.55, Output: 2.19, CacheRead: 0.14},
-	"deepseek-chat":    {Input: 0.27, Output: 1.1, CacheRead: 0.07},
-	"deepseek-reasoner": {Input: 0.55, Output: 2.19, CacheRead: 0.14},
-
-	// ---- 智谱 GLM ----
-	"glm-4.6":      {Input: 0.6, Output: 2.2, CacheRead: 0.11},
-	"glm-4.5":      {Input: 0.6, Output: 2.2, CacheRead: 0.11},
-	"glm-4.5-air":  {Input: 0.2, Output: 1.1, CacheRead: 0.03},
-
-	// ---- 月之暗面 Kimi ----
-	"kimi-k2":   {Input: 0.6, Output: 2.5, CacheRead: 0.15},
-	"kimi-k2.5": {Input: 0.6, Output: 2.5, CacheRead: 0.15},
-
-	// ---- 阿里 Qwen ----
-	"qwen3-max":   {Input: 1.2, Output: 6, CacheRead: 0.24},
-	"qwen3-plus":  {Input: 0.4, Output: 1.2, CacheRead: 0.08},
-	"qwen3-turbo": {Input: 0.05, Output: 0.2, CacheRead: 0.01},
-}
-
-// lookupBuiltinPrice 按模型名找内置价格。
-//
-// 匹配规则：先精确，再**前缀**。上游的模型名常带日期后缀
-// （`gpt-4o-mini-2024-07-18`），精确匹配会全部落空 —— 那样内置表等于没用。
-// 前缀取最长的那条，避免 `gpt-4o` 抢走 `gpt-4o-mini` 的价格。
-func lookupBuiltinPrice(model string) (ModelPrice, bool) {
-	name := strings.ToLower(strings.TrimSpace(model))
-	if name == "" {
-		return ModelPrice{}, false
-	}
-
-	if price, ok := BuiltinPrices[name]; ok {
-		return price, true
-	}
-
-	best := ""
-	var bestPrice ModelPrice
-	for key, price := range BuiltinPrices {
-		if strings.HasPrefix(name, key) && len(key) > len(best) {
-			best = key
-			bestPrice = price
-		}
-	}
-	if best != "" {
-		return bestPrice, true
-	}
-	return ModelPrice{}, false
-}
-
 // ApplyBuiltinPrices 给"从未定价"的模型填入内置价格。
 //
-// 只填 `input_price = 0` 的：人工改过的价格不该被同步覆盖 ——
+// 只填三项单价都为 0 的：人工改过的价格不该被同步覆盖 ——
 // 那可能是谈下来的折扣价，被一次同步改回标价会直接影响毛利。
 //
 // `usdToCny` 是汇率；落库单位是元 / 百万 token。
@@ -127,7 +34,7 @@ func (s *Store) ApplyBuiltinPrices(ctx context.Context, usdToCny float64) (int64
 	var names []string
 	if err := s.db.WithContext(ctx).
 		Model(&dbmodels.Models{}).
-		Where("input_price = 0 OR output_price = 0").
+		Where("input_price = 0 AND output_price = 0 AND cache_read_price = 0").
 		Pluck("canonical_name", &names).Error; err != nil {
 		return 0, fmt.Errorf("查询未定价模型失败: %w", err)
 	}
@@ -138,20 +45,21 @@ func (s *Store) ApplyBuiltinPrices(ctx context.Context, usdToCny float64) (int64
 		if !ok {
 			continue
 		}
-		_, err := s.exec(ctx,
+		priceCNY := price.inCNY(usdToCny)
+		affected, err := s.exec(ctx,
 			`UPDATE models SET
 			     input_price = $2, output_price = $3, cache_read_price = $4
 			 WHERE canonical_name = $1
-			   AND (input_price = 0 OR output_price = 0)`,
+			   AND input_price = 0 AND output_price = 0 AND cache_read_price = 0`,
 			name,
-			price.Input*usdToCny,
-			price.Output*usdToCny,
-			price.CacheRead*usdToCny,
+			priceCNY.Input,
+			priceCNY.Output,
+			priceCNY.CacheRead,
 		)
 		if err != nil {
 			return filled, fmt.Errorf("写入内置价格失败: %w", err)
 		}
-		filled++
+		filled += affected
 	}
 
 	return filled, nil
