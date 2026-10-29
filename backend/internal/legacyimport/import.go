@@ -17,6 +17,7 @@ type Report struct {
 	NewAccounts             int    `json:"newAccounts"`
 	SkippedExistingAccounts int    `json:"skippedExistingAccounts"`
 	NewChannels             int    `json:"newChannels"`
+	NewCapabilityRecords    int    `json:"newCapabilityRecords"`
 }
 
 // Avoid printing SQL errors containing data, connection strings, or credentials.
@@ -88,6 +89,25 @@ func Import(ctx context.Context, conn *pgx.Conn, p *Prepared, targetKey []byte, 
 			targetIdentity, identityErr := identity(options)
 			if adapter != c.Adapter || identityErr != nil || sourceIdentity != targetIdentity {
 				return r, errors.New("existing channel has a different platform/region/identity; resolve the channel conflict first")
+			}
+		}
+		// Task discovery filters out channels without an operations capability row.
+		// Repair missing rows on reruns as well, while preserving existing settings.
+		var hasCaps bool
+		if err = tx.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM channel_caps WHERE channel_id=$1)", c.ID).Scan(&hasCaps); err != nil {
+			return r, databaseError(err)
+		}
+		if !hasCaps {
+			if apply {
+				sourceIdentity, _ := identity(c.Options)
+				result, insertErr := tx.Exec(ctx, `INSERT INTO channel_caps (channel_id,tasks,daily,checkin)
+					VALUES ($1,$2,true,true) ON CONFLICT (channel_id) DO NOTHING`, c.ID, sourceIdentity == "cn/workbuddy" || sourceIdentity == "cn/codebuddy")
+				if insertErr != nil {
+					return r, databaseError(insertErr)
+				}
+				r.NewCapabilityRecords += int(result.RowsAffected())
+			} else {
+				r.NewCapabilityRecords++
 			}
 		}
 	}
