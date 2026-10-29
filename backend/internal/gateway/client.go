@@ -25,7 +25,7 @@ type Client struct {
 	//
 	// 与 `baseURL` 必须分开：那个是后端到网关的内部地址（通常是 127.0.0.1），
 	// 用户在自己的电脑上填 127.0.0.1 是打不到这台机器的。
-	// 部署时用 `GATEWAY_BASE_URL` 指到真实域名；本地开发两者可以相同。
+	// 部署时用 GATEWAY_PUBLIC_BASE_URL 配置外部地址或 same-origin。
 	publicBaseURL string
 	token         string
 	http          *http.Client
@@ -53,8 +53,7 @@ func New(conf config.GatewayConf) *Client {
 
 // PublicBaseURL 返回对外公布的网关根地址（不带结尾斜杠）。
 //
-// 给前端拼客户端接入信息用。**不要用 `window.location.origin` 代替**：
-// 管理台在 5173，网关在 18788，两者不是同一个进程。
+// same-origin 由公开配置接口转换为显式标记；独立网关返回绝对地址。
 func (c *Client) PublicBaseURL() string {
 	return c.publicBaseURL
 }

@@ -124,11 +124,12 @@ data/
 ```dotenv
 RELAYAI_PORT=8080
 # 管理台生成客户端配置时使用的对外根地址，不带 /v1。
-# 本机默认 http://localhost:<RELAYAI_PORT>；远程部署时改成实际 IP 或域名。
-GATEWAY_PUBLIC_BASE_URL=http://192.168.1.10:8080
+# 默认 same-origin：自动使用浏览器访问的 IP / 域名、协议及端口。
+# 网关单独部署或需要固定地址时才设置以下绝对地址。
+# GATEWAY_PUBLIC_BASE_URL=https://relay.example.com
 ```
 
-然后执行 `docker compose up -d` 应用配置。若前面还有 HTTPS 反向代理，将 `GATEWAY_PUBLIC_BASE_URL` 设为实际的 `https://域名`。
+然后执行 `docker compose up -d` 应用配置。默认通过 `http://服务器IP:8080` 打开管理台时，客户端 Base URL 自动显示为 `http://服务器IP:8080/v1`；通过 HTTPS 域名打开时也会跟随浏览器地址。若之前在 `.env` 中显式写过 `GATEWAY_PUBLIC_BASE_URL=http://localhost:8080`，删除该配置或改成 `same-origin` 即可启用自动识别。
 
 Compose 使用 `data/secrets/` 中的独立密钥和容器内数据库，不读取本地开发用的 `DATABASE_URL`、`RELAYAI_MASTER_KEY` 等环境变量。首次容器部署使用一个新库；原来本地 PostgreSQL 的数据需要另行迁移，迁移账号凭据时必须同时保留原加密主密钥。
 

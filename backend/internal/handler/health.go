@@ -29,17 +29,21 @@ func registerHealth(mux *http.ServeMux, ctx *svc.ServiceContext) {
 
 	// 公开配置：前端拼客户端接入信息（base URL / curl / CC Switch 导入）时需要。
 	//
-	// 为什么不能直接用 `window.location.origin`：
-	// 管理台跑在 5173（Vite），而**网关**在 18788。用户在管理台点
-	// 「导入 CC Switch」时，如果地址填的是 5173，CC Switch 会去打前端开发服务器，
-	// 得到 404 —— 看起来像"网关坏了"，其实是地址指错了进程。
+	// Docker 通过同一个 Nginx 提供管理台与网关，用显式的 same-origin 配置
+	// 允许前端使用浏览器当前地址。开发环境与独立网关仍使用配置的地址。
 	//
 	// 无需鉴权：这些地址本来就印在用户自己的客户端配置里，不是秘密。
 	// 但**不包含任何密钥**。
 	mux.HandleFunc("GET /public-config", func(w http.ResponseWriter, r *http.Request) {
+		baseURL := ctx.Gateway.PublicBaseURL()
+		sameOrigin := baseURL == "same-origin"
+		if sameOrigin {
+			baseURL = ""
+		}
 		httpx.OK(w, map[string]any{
-			"gatewayBaseUrl": ctx.Gateway.PublicBaseURL(),
-			"siteName":       "relayAI",
+			"gatewayBaseUrl":    baseURL,
+			"gatewaySameOrigin": sameOrigin,
+			"siteName":          "relayAI",
 		})
 	})
 }

@@ -77,9 +77,8 @@ export const KeysPage = () => {
   /**
    * 网关的对外地址（来自 `/public-config`）。
    *
-   * 不能退回 `window.location.origin`：管理台在 5173、网关在 18788。
-   * 拉不到时给空串，界面上显示"地址未知"而不是一个错的地址 ——
-   * 错的地址比没有更糟，用户会照着填、然后以为网关坏了。
+   * API 层仅在服务端明确配置共用入口时解析为当前浏览器地址。
+   * 独立网关使用配置值，读取失败时显示地址未知。
    */
   const [gatewayBaseUrl, setGatewayBaseUrl] = useState("");
 
@@ -636,7 +635,7 @@ export const KeysPage = () => {
                 {gatewayBaseUrl || "地址未知（后端未配置 GATEWAY_BASE_URL）"}
               </code>
               <p className="text-[11px] text-muted-foreground">
-                这是网关的地址，不是当前管理台的地址。两者是不同的进程。
+                客户端使用此地址接入，导入配置也会使用相同地址。
               </p>
             </div>
 

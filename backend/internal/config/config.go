@@ -40,9 +40,9 @@ type GatewayConf struct {
 
 	// PublicBaseURL 是对外公布的网关地址（客户端填 base URL 用）。
 	//
-	// 留空则回落到 BaseURL —— 本地开发两者相同。
-	// 但**部署时必须显式设置**：BaseURL 往往是 127.0.0.1（后端到网关的内网地址），
-	// 用户在自己电脑上填 127.0.0.1 打的是他自己的机器。
+	// 留空则回落到 BaseURL；Docker 默认设为 same-origin，表示管理台与
+	// /v1 通过同一个入口提供服务，前端按浏览器实际地址生成接入信息。
+	// 独立部署网关时填可供客户端访问的绝对地址。
 	PublicBaseURL string `json:",optional"`
 
 	// InternalToken 内部接口共享密钥，必须与网关的 GATEWAY_INTERNAL_TOKEN 一致。
