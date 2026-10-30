@@ -353,11 +353,35 @@ impl ChannelAdapter for WorkbuddyChannel {
 /// 6004 要落到 [`ErrorScope::AccountModel`]，不能拉黑整个账号。
 pub fn refine(status: u16, body: &str, upstream_model: &str) -> GatewayError {
     // 只认结构化错误码，避免请求 ID 或正文中碰巧出现的数字触发账号限制。
-    if serde_json::from_str::<serde_json::Value>(body)
-        .ok()
-        .and_then(|value| value.get("code").cloned())
-        .is_some_and(|code| code.as_i64() == Some(11140) || code.as_str() == Some("11140"))
-    {
+    let payload = serde_json::from_str::<serde_json::Value>(body).ok();
+    let code = payload.as_ref().and_then(|value| value.get("code"));
+    let code = code.and_then(|code| {
+        code.as_i64().or_else(|| code.as_str().and_then(|code| code.parse::<i64>().ok()))
+    });
+    if code == Some(14003) {
+        let payload = payload.as_ref().expect("structured error code requires JSON");
+        let retry_policy = &payload["retry_policy"];
+        let retry_after = retry_policy["retry_after"].as_u64().filter(|seconds| *seconds > 0);
+        let detail = ["zh", "en"].into_iter()
+            .filter_map(|language| payload["displayMsg"][language].as_str())
+            .find(|text| !text.trim().is_empty())
+            .unwrap_or("模型繁忙，请换模型或稍后重试");
+        let wait = retry_after
+            .map(|seconds| format!("；上游建议 {seconds} 秒后重试"))
+            .unwrap_or_default();
+        return GatewayError::new(
+            ErrorKind::ModelBusy,
+            ErrorScope::Request,
+            503,
+            format!("{detail}（错误码 14003）{wait}"),
+            retry_policy["retry"].as_bool().unwrap_or(true),
+        )
+        .with_reset_at(retry_after.map(|seconds| {
+            crate::gateway::timeutil::now_ms().saturating_add(seconds.saturating_mul(1000))
+        }))
+        .with_upstream(openai_compat::raw(body));
+    }
+    if code == Some(11140) {
         return GatewayError::new(
             ErrorKind::AccountRestricted,
             ErrorScope::Account,
@@ -601,6 +625,45 @@ mod tests {
         }
         assert_eq!(refine(403, r#"{"code":"11140"}"#, "m").kind, ErrorKind::AccountRestricted);
         assert_eq!(refine(403, r#"{"code":999,"requestId":"11140"}"#, "m").kind, ErrorKind::ContentPolicy);
+    }
+
+    #[test]
+    fn model_busy_keeps_upstream_details_and_retry_advice() {
+        let body = r#"{"code":14003,"msg":"too many requests","requestId":"e3913abdaeed4bd7bb2d26d4076d470e","retry_policy":{"retry":true,"retry_after":30},"displayMsg":{"en":"Model busy. Please switch models or retry later","zh":"模型繁忙，请换模型或稍后重试"},"displayTips":{"en":"This model is currently saturated. It is not a network issue."}}"#;
+        for status in [400, 429, 503] {
+            let before = crate::gateway::timeutil::now_ms();
+            let error = refine(status, body, "deepseek-v4.1-flash");
+            let after = crate::gateway::timeutil::now_ms();
+            assert_eq!(error.kind, ErrorKind::ModelBusy);
+            assert_eq!(error.scope, ErrorScope::Request);
+            assert_eq!(error.status, 503);
+            assert!(error.retryable);
+            assert!(error.message.contains("模型繁忙"));
+            assert!(error.message.contains("30 秒后重试"));
+            assert!((before + 30_000..=after + 30_000).contains(&error.reset_at_ms.unwrap()));
+            assert_eq!(error.upstream.as_deref(), Some(body));
+            // 使用记录通过 describe() 保存分类说明和上游正文。
+            let detail = error.describe();
+            assert!(detail.contains("e3913abdaeed4bd7bb2d26d4076d470e"));
+            assert!(detail.contains("not a network issue"));
+        }
+    }
+
+    #[test]
+    fn model_busy_requires_structured_code_and_does_not_invent_retry_time() {
+        let error = refine(429, r#"{"code":"14003"}"#, "m");
+        assert_eq!(error.kind, ErrorKind::ModelBusy);
+        assert_eq!(error.reset_at_ms, None);
+        assert!(!error.message.contains("秒后"));
+        for retry_after in [json!(null), json!(-1), json!("invalid"), json!(0)] {
+            let body = json!({"code":14003,"retry_policy":{"retry":false,"retry_after":retry_after}}).to_string();
+            let error = refine(429, &body, "m");
+            assert!(!error.retryable);
+            assert_eq!(error.reset_at_ms, None);
+        }
+        for body in [r#"{"code":999,"requestId":"14003"}"#, "code 14003", "{invalid json}"] {
+            assert_eq!(refine(429, body, "m").kind, ErrorKind::RateLimited);
+        }
     }
 
     /// 渠道校验保留请求级错误、重试标记和上游原文。

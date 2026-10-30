@@ -512,6 +512,42 @@ mod tests {
             ErrorScope::Account
         ));
     }
+
+    #[test]
+    fn repeated_model_busy_errors_leave_account_and_models_ready() {
+        use crate::gateway::{
+            channels::workbuddy,
+            config::CooldownConfig,
+        };
+
+        let mut account = PoolAccount::new("workbuddy", "busy-account");
+        account.requires_credential = false;
+        let now = now_ms();
+        // 多次繁忙也不能累计为账号软限流、模型额度冷却或 5xx 熔断。
+        for body in [
+            r#"{"code":14003,"retry_policy":{"retry":true,"retry_after":30}}"#,
+            r#"{"code":14003}"#,
+        ] {
+            for _ in 0..10 {
+                let error = narrow_scope(workbuddy::refine(429, body, "upstream-flash"), "upstream-flash");
+                assert_eq!(error.scope, ErrorScope::Request);
+                account.apply_error(&error, &CooldownConfig::default(), now);
+                assert!(account.is_ready("upstream-flash", now));
+                assert!(account.is_ready("another-model", now));
+                assert!(account.blocked_reasons("upstream-flash", now).is_empty());
+                assert_eq!(account.cooldown_until_ms(), 0);
+                assert!(account.model_cooldowns_snapshot(now).is_empty());
+                let view = account.view(now);
+                assert!(view.ready);
+                assert!(view.blocked_reasons.is_empty());
+                assert!(view.model_limits.is_empty());
+            }
+        }
+        // 繁忙不应提前累积后续真实账号 429 的退避次数。
+        let policy = CooldownConfig::default();
+        account.apply_error(&workbuddy::refine(429, "too many requests", "upstream-flash"), &policy, now);
+        assert_eq!(account.cooldown_until_ms(), now + policy.soft_base_secs * 1000);
+    }
 }
 
 /// 单账号真实探针：只对该账号发一条最小请求，返回耗时与回复摘要。

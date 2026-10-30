@@ -154,6 +154,7 @@ pub(super) fn record_rejection(
         | crate::gateway::errors::ErrorKind::Network => "上游失败",
         crate::gateway::errors::ErrorKind::NoAccount => "无可用账号",
         crate::gateway::errors::ErrorKind::RateLimited => "限流或并发",
+        crate::gateway::errors::ErrorKind::ModelBusy => "模型繁忙",
         crate::gateway::errors::ErrorKind::KeyForbidden => "Key 无权限",
         _ => "请求被拒",
     };

@@ -20,6 +20,8 @@ pub enum ErrorKind {
     AuthExpired,
     /// 429：限流（带 reset 时刻 = 只冷该模型；不带 = 账号级软限流）。
     RateLimited,
+    /// 上游模型容量饱和；不代表账号或凭据不可用。
+    ModelBusy,
     /// 402：余额/额度耗尽。
     QuotaExhausted,
     /// 403：内容审核。
@@ -61,7 +63,7 @@ impl ErrorKind {
             Self::RateLimited | Self::NoAccount => "rate_limit_error",
             Self::QuotaExhausted => "insufficient_quota",
             Self::ChannelBlocked => "channel_blocked_error",
-            Self::Upstream5xx | Self::Network | Self::Internal => "api_error",
+            Self::ModelBusy | Self::Upstream5xx | Self::Network | Self::Internal => "api_error",
         }
     }
 }
