@@ -374,7 +374,7 @@ export const ChannelsPage = () => {
           <p className="rounded-md bg-muted/50 px-3 py-2 text-[11px] leading-5 text-muted-foreground">
             账号不会被删除：凭据、登录态与历史用量都保留，只是不再挂在任何分组下，
             也不再参与对外调度。之后可以在「账号管理」里重新分配。
-            如果只是不想让它对外提供服务，请改为**停用**分组。
+            如果只是不想让它对外提供服务，请改为「停用」分组。
           </p>
 
           {deleteError ? <ErrorState title="删除失败" message={deleteError} /> : null}
