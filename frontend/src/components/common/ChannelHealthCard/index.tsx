@@ -1,4 +1,4 @@
-import { Clock3, Gauge, PencilLine, Radio, Zap } from "lucide-react";
+import { Clock3, Gauge, PencilLine, Radio, Timer } from "lucide-react";
 import { Link } from "react-router-dom";
 import { StatusBadge, type StatusTone } from "@/components/common/StatusBadge";
 import { StatusStrip } from "@/components/common/StatusStrip";
@@ -19,10 +19,39 @@ const formatPercent = (value: number | null) =>
   value === null ? "—" : `${(value * 100).toFixed(2)}%`;
 
 /**
- * 渠道健康度判定。
+ * 把探活时刻转成"几分钟前"。
  *
- * 顺序很重要：**先看有没有测过**。没有任何请求的渠道成功率是 null，
- * 不能判成"异常"——新品还没接入就被标红，会让告警失去意义。
+ * 卡片上要回答的是"这个绿灯有多新"，绝对时间需要心算，
+ * 所以主文案用相对时间，绝对时间放在 title 里备查。
+ */
+const formatAgo = (iso: string | null) => {
+  if (!iso) {
+    return "还未探活";
+  }
+  const timestamp = Date.parse(iso);
+  if (Number.isNaN(timestamp)) {
+    return "还未探活";
+  }
+  const minutes = Math.floor((Date.now() - timestamp) / 60_000);
+  if (minutes < 1) {
+    return "刚刚";
+  }
+  if (minutes < 60) {
+    return `${minutes} 分钟前`;
+  }
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) {
+    return `${hours} 小时前`;
+  }
+  return `${Math.floor(hours / 24)} 天前`;
+};
+
+/**
+ * 分组健康度判定。
+ *
+ * 顺序很重要：**先看有没有探过**。没有探活记录的分组成功率是 null，
+ * 不能判成"异常"——没配探活模型的分组本来就不会有记录，
+ * 把它标红会让告警失去意义。
  */
 const healthOf = (channel: ChannelHealth): { tone: StatusTone; label: string } => {
   if (!channel.enabled) {
@@ -34,7 +63,7 @@ const healthOf = (channel: ChannelHealth): { tone: StatusTone; label: string } =
   if (channel.readyAccounts === 0) {
     return { tone: "danger", label: "无可用账号" };
   }
-  if (channel.requests === 0 || channel.successRate === null) {
+  if (channel.probes === 0 || channel.successRate === null) {
     return { tone: "info", label: "待观测" };
   }
   if (channel.successRate < 0.9) {
@@ -50,12 +79,14 @@ const Metric = ({
   icon: Icon,
   label,
   value,
+  title,
 }: {
-  icon: typeof Zap;
+  icon: typeof Timer;
   label: string;
   value: string;
+  title?: string;
 }) => (
-  <div className="flex min-w-0 flex-col gap-0.5">
+  <div className="flex min-w-0 flex-col gap-0.5" title={title}>
     <span className="flex items-center gap-1 text-[11px] text-muted-foreground">
       <Icon className="size-3" aria-hidden="true" />
       {label}
@@ -66,7 +97,7 @@ const Metric = ({
 
 export type ChannelHealthCardProps = {
   channel: ChannelHealth;
-  /** 统计窗口天数，用于"可用性 · 7 天"这类文案。 */
+  /** 统计窗口天数，用于"探活可用性 · 7 天"这类文案。 */
   days: number;
   /**
    * 打开「设置探活模型」。
@@ -77,10 +108,13 @@ export type ChannelHealthCardProps = {
 };
 
 /**
- * 渠道状态卡片。
+ * 分组状态卡片。
  *
- * 信息层级（自上而下）：身份 → 状态判定 → 性能指标 → 可用性 → 最近请求。
- * 这样扫视一张卡片时先回答"它能用吗"，再回答"好用吗"，最后才是"刚才稳不稳"。
+ * 信息层级（自上而下）：身份 → 状态判定 → 探活指标 → 探活可用性 → 最近探活。
+ * 这样扫视一张卡片时先回答"它能用吗"，再回答"探得怎么样"，最后才是"刚才稳不稳"。
+ *
+ * 全部数字都来自定时探活，与真实请求用量无关 —— 这一点必须在文案上说清，
+ * 否则"999 次探活"会被读成"999 次调用"。
  */
 export const ChannelHealthCard = ({
   channel,
@@ -88,6 +122,16 @@ export const ChannelHealthCard = ({
   onEditProbeModel,
 }: ChannelHealthCardProps) => {
   const health = healthOf(channel);
+  /*
+    模型列表优先用 probeModels；老后端只回 probeModel 时退化成单元素，
+    免得整行显示成"自动"而实际正在探某个模型。
+  */
+  const probeModels =
+    channel.probeModels.length > 0
+      ? channel.probeModels
+      : channel.probeModel
+        ? [channel.probeModel]
+        : [];
 
   return (
     <article
@@ -121,21 +165,21 @@ export const ChannelHealthCard = ({
             没指定时是网关自动挑（免费优先），显示成"自动"而不是留空 ——
             留空会被读成"没有探活"。
           */}
-          <p className="mt-1 flex items-center gap-1 text-[11px] text-muted-foreground">
-            <Gauge className="size-3 shrink-0" aria-hidden="true" />
+          <p className="mt-1 flex items-start gap-1 text-[11px] text-muted-foreground">
+            <Gauge className="mt-0.5 size-3 shrink-0" aria-hidden="true" />
             <span className="shrink-0">探活模型</span>
             <span
               className={cn(
-                "truncate font-mono",
-                channel.probeModel ? "text-foreground" : "text-muted-foreground",
+                "min-w-0 break-all font-mono",
+                probeModels.length > 0 ? "text-foreground" : "text-muted-foreground",
               )}
               title={
-                channel.probeModel
-                  ? `用 ${channel.probeModel} 探活`
+                probeModels.length > 0
+                  ? `每轮探 ${probeModels.length} 个模型：${probeModels.join("、")}`
                   : "未指定：由网关按「免费优先」自动挑一个属于该分组的模型"
               }
             >
-              {channel.probeModel || "自动（免费优先）"}
+              {probeModels.length > 0 ? probeModels.join("、") : "自动（免费优先）"}
             </span>
             {onEditProbeModel ? (
               <button
@@ -143,7 +187,7 @@ export const ChannelHealthCard = ({
                 onClick={() => onEditProbeModel(channel)}
                 aria-label={`设置 ${channel.name} 的探活模型`}
                 title="更换探活模型"
-                className="ml-auto inline-flex cursor-pointer items-center rounded px-1 py-0.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:outline-none"
+                className="ml-auto inline-flex shrink-0 cursor-pointer items-center rounded px-1 py-0.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:outline-none"
               >
                 <PencilLine className="size-3" aria-hidden="true" />
               </button>
@@ -153,19 +197,28 @@ export const ChannelHealthCard = ({
         <StatusBadge tone={health.tone} label={health.label} />
       </header>
 
-      {/* 性能指标 */}
+      {/* 探活指标：耗时与新鲜度 */}
       <div className="grid grid-cols-2 gap-2 rounded-lg bg-muted/50 px-3 py-2">
         <Metric
           icon={Clock3}
-          label="首字延迟"
-          value={formatMs(channel.avgTtftMs)}
+          label="探活耗时"
+          value={formatMs(channel.avgLatencyMs)}
+          title="窗口内成功探活的平均端到端耗时（不含 0 毫秒的失败记录）"
         />
-        <Metric icon={Zap} label="平均耗时" value={formatMs(channel.avgLatencyMs)} />
+        <Metric
+          icon={Timer}
+          label="最近探活"
+          value={formatAgo(channel.lastProbeAt)}
+          title={channel.lastProbeAt ?? "还没有任何探活记录"}
+        />
       </div>
 
-      {/* 可用性 */}
+      {/* 探活可用性：口径与下方状态条同源 */}
       <div className="flex items-baseline justify-between gap-2">
-        <span className="text-xs text-muted-foreground">可用性 · {days} 天</span>
+        <span className="text-xs text-muted-foreground">
+          探活可用性 · {days} 天
+          <span className="ml-1 text-[11px]">（{channel.probes} 次）</span>
+        </span>
         <span
           className={cn(
             "text-2xl leading-8 font-semibold tabular-nums",
@@ -183,22 +236,20 @@ export const ChannelHealthCard = ({
       </div>
 
       {/*
-        最近请求的状态条（只画格子，不显示 token / 次数汇总）。
+        最近探活的细条（一格 = 一次探活）。
 
-        保留状态条是因为它一眼能看出"刚才有没有连续失败"——
-        可用性百分比是 7 天聚合，一次刚发生的故障在百分比上看不出来。
-        但**不显示 "N token · M 次"**：那个数字混着历史导入与系统自身流量，
-        既不反映真实业务量，也会让人以为渠道在猛跑。
+        保留它是因为百分比是窗口聚合，一次刚发生的故障在百分比上看不出来；
+        细条一眼能看出"刚才有没有连续失败"。而"一格 = 一次探活"意味着
+        它的增长速度只取决于探活间隔，不会因为业务流量变大而变快。
       */}
       {channel.recent.length > 0 ? (
         <StatusStrip statuses={channel.recent} />
-      ) : null}
-
-      {/*
-        底部账号行已移除：`N 个账号 · 运行态未知` 对使用者没有决策价值
-        （"运行态未知"只说明网关没上报，改不了任何事），
-        而"详情"入口在卡片标题上点一下也一样能进。
-      */}
+      ) : (
+        <p className="rounded-md bg-muted/50 px-2 py-1.5 text-[11px] leading-4 text-muted-foreground">
+          <Radio className="mr-1 inline size-3" aria-hidden="true" />
+          还没有探活记录：先给这个分组选一个探活模型，定时探活下一轮就会有数据。
+        </p>
+      )}
 
       {channel.lastError ? (
         <p

@@ -28,8 +28,14 @@ export type ChannelPayload = {
   rateLimitQps: number | null;
   /** 对外暴露的模型白名单；空数组 = 清空限制。 */
   modelAllow?: string[];
-  /** 探活模型；空串 = 恢复"自动挑"。 */
+  /** 探活模型（卡片上显示的那个）；空串 = 恢复"自动挑"。 */
   probeModel?: string;
+  /**
+   * 定时探活**真正读取**的模型列表。
+   *
+   * 与 `probeModel` 一起写：只改显示字段的话，探活仍按旧列表跑。
+   */
+  probeModels?: string[];
 };
 
 export const createChannel = (payload: ChannelPayload) =>

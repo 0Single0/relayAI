@@ -120,7 +120,21 @@ export const ProbeModelDialog = ({
     setPending(true);
     setError("");
     try {
-      await updateChannel(channel.id, { probeModel: value === AUTO ? "" : value });
+      /*
+        两个字段一起写，缺一不可：
+
+        · `probeModel` 是卡片上显示的"探活模型"；
+        · `probeModels` 是定时探活**真正会读**的列表。
+
+        只写前者的话，界面显示已经换了，实际探测仍按旧列表跑 ——
+        看起来生效、行为没变，比没有这个设置更难排查。
+        表单是单选，所以这里把列表收敛成这一个模型。
+      */
+      const chosen = value === AUTO ? "" : value;
+      await updateChannel(channel.id, {
+        probeModel: chosen,
+        probeModels: chosen ? [chosen] : [],
+      });
       onSaved();
     } catch (requestError) {
       setError(getRequestErrorMessage(requestError));

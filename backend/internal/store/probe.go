@@ -29,9 +29,9 @@ type ProbeTarget struct {
 //
 // 规则（**没有默认值，人不配就不探**）：
 //  1. 只取**启用**的分组与账号；
-//  2. 每个分组**只探它的 `probe_models` 里列出的模型**；
-//     列表为空 = 这个分组不探 —— 绝不擅自扩大范围。
-//     探活消耗真实额度，"没说要探"和"探全部"必须严格区分，
+//  2. 每个分组只探它**显式声明**的模型：`probe_model`（单选，界面上的
+//     「探活模型」）与 `probe_models`（多选）的并集；两个都为空 = 这个分组不探 ——
+//     绝不擅自扩大范围。探活消耗真实额度，"没说要探"和"探全部"必须严格区分，
 //     否则一次同步进来的几十个模型会在后台悄悄烧钱。
 //  3. 每个模型挑**一个**账号去探 —— 探活回答的是"这个模型通不通"，
 //     号级别的可用性由网关的冷却状态反映，不必重复确认。
@@ -54,26 +54,32 @@ func (s *Store) ProbeTargets(ctx context.Context) ([]ProbeTarget, error) {
 		    WHERE enabled
 		),
 		/*
-			只探 probe_models 里**显式列出**的模型。
+			只探**显式声明**的模型。
 
-			WHERE array_length(...) > 0：没配列表的分组在这里产生零行 ——
-			不是"回退到全部模型"。探活花的是真金白银的额度，
-			没有人的授权就不动。
+			为什么取两个字段的并集：probe_model 是分组状态卡上那个
+			「探活模型」单选框写的，probe_models 是多选。曾经这里只读
+			probe_models，于是界面上设了探活模型却完全不起作用 ——
+			设置看起来生效、行为毫无变化，比没有这个设置更糟。
+
+			并集为空时不产生任何行（unnest 空数组 = 零行），
+			等价于"没配就不探"，不需要额外的 array_length 判断。
 		*/
 		channel_models AS (
 		    SELECT c.id AS channel_id,
-		           c.probe_models AS probe_models
+		           unnest(
+		               COALESCE(c.probe_models, ARRAY[]::text[])
+		               || COALESCE(ARRAY[c.probe_model], ARRAY[]::text[])
+		           ) AS model
 		    FROM channels c
 		    WHERE c.enabled
-		      AND array_length(c.probe_models, 1) > 0
 		),
 		picked AS (
-		    SELECT channel_id, model,
+		    SELECT DISTINCT channel_id, model,
 		           (SELECT uid FROM enabled_accounts a
 		             WHERE a.channel_id = cm.channel_id
 		             ORDER BY a.uid LIMIT 1) AS uid
 		    FROM channel_models cm
-		    CROSS JOIN LATERAL unnest(cm.probe_models) AS model
+		    WHERE COALESCE(cm.model, '') <> ''
 		)
 		SELECT channel_id,
 		       COALESCE(uid, '') AS account_uid,

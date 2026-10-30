@@ -1,9 +1,12 @@
 import { cn } from "@/lib/utils";
 
 export type StatusStripProps = {
-  /** 旧 → 新的状态序列，值原样来自 `usage_logs.status`。 */
+  /**
+   * 旧 → 新的状态序列，值原样来自 `channel_probes.status`
+   * （`ok` / `limited` / `auth` / `quota` / `error`）。
+   */
   statuses: string[];
-  /** 期望的格数；不足的用空格补齐（左侧留空 = 那段时间没有请求）。 */
+  /** 期望的格数；不足的用空格补齐（左侧留空 = 那段时间还没探过）。 */
   slots?: number;
   className?: string;
   /** 屏幕阅读器用的说明前缀。 */
@@ -11,43 +14,47 @@ export type StatusStripProps = {
 };
 
 /**
- * 把 `usage_logs.status` 映射成三档颜色。
+ * 把 `channel_probes.status` 映射成三档颜色。
  *
- * 为什么不区分 `client_aborted` / `upstream_aborted`：细条只有 2px 宽，
- * 四种颜色的差别在视觉上根本分辨不出来，反而会让人以为颜色有别的含义。
- * 只有"成功 / 未完成 / 失败"三档是一眼可读的。
+ * 为什么不区分 `auth` / `quota` / `error`：细条只有 2px 宽，
+ * 几种颜色的差别在视觉上根本分辨不出来，反而会让人以为颜色有别的含义。
+ * 只有"通过 / 限流 / 失败"三档是一眼可读的，具体原因在卡片底部的文字里。
  */
 const toneOf = (status: string) => {
-  if (status === "completed") {
+  if (status === "ok") {
     return "bg-success/70";
   }
-  if (status === "client_aborted" || status === "upstream_aborted") {
+  if (status === "limited") {
     return "bg-warning/70";
   }
   return "bg-destructive/70";
 };
 
 const toneLabel = (status: string) => {
-  if (status === "completed") {
-    return "成功";
+  if (status === "ok") {
+    return "通过";
   }
-  if (status === "client_aborted" || status === "upstream_aborted") {
-    return "中断";
+  if (status === "limited") {
+    return "限流";
   }
   return "失败";
 };
 
 /**
- * 最近 N 次请求的状态细条（旧 → 新）。
+ * 最近 N 次探活的状态细条（旧 → 新）。
  *
- * 数据不足时**从左侧留空**而不是把已有格子拉伸：拉伸会让"只跑过 2 次"
- * 看起来和"跑满 60 次"一样密，那是在骗人。留空清楚地表达了样本量。
+ * **一格 = 一次探活**，不是一次真实请求。这是关键的口径：
+ * 探活按设置的间隔（最低 5 分钟）跑，所以这排格子只会按那个节奏增长；
+ * 如果它涨得很快，说明探活间隔调短了或手动探活点得勤，而不是流量在涨。
+ *
+ * 数据不足时**从左侧留空**而不是把已有格子拉伸：拉伸会让"只探过 2 次"
+ * 看起来和"探满 60 次"一样密，那是在骗人。留空清楚地表达了样本量。
  */
 export const StatusStrip = ({
   statuses,
   slots = 60,
   className,
-  label = "最近请求状态",
+  label = "最近探活状态",
 }: StatusStripProps) => {
   const total = Math.max(slots, statuses.length);
   const padding = Math.max(0, total - statuses.length);
@@ -59,8 +66,8 @@ export const StatusStrip = ({
 
   const summary =
     statuses.length === 0
-      ? "还没有请求记录"
-      : `最近 ${statuses.length} 次请求：${Object.entries(counts)
+      ? "还没有探活记录"
+      : `最近 ${statuses.length} 次探活：${Object.entries(counts)
           .map(([key, value]) => `${key} ${value}`)
           .join("，")}`;
 

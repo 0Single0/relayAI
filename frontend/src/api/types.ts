@@ -376,6 +376,13 @@ export type DailyAction = {
 
 export type TaskAccountLive = {
   uid: string;
+  /**
+   * 该账号**当前所属分组**；空串 = 还没分配（待分配）。
+   *
+   * 任务页按版本取号，同屏可能出现来自不同分组、甚至没分组的号，
+   * 所以执行/取消都要用账号自己的分组，而不是页面级的"代表分组"。
+   */
+  channelId: string;
   nickname: string;
   enabled: boolean;
   credentialOk: boolean;
@@ -450,10 +457,14 @@ export type Settings = {
 };
 
 /**
- * 渠道健康度（「渠道状态」页的一张卡片）。
+ * 分组健康度（「分组状态」页的一张卡片）。
  *
  * 可为 null 的字段一律**不要**在渲染前补成 0：`null` 表示"没测过"，
  * `0` 表示"测了，结果是 0"，两者在告警语境下完全相反。
+ *
+ * 口径：卡片上**所有**指标都来自定时探活（`channel_probes`），
+ * 不是真实请求（`usage_logs`）。一次探活 = 下方状态条的一格，
+ * 所以这排格子长得多快直接反映探活间隔，不会再随流量起伏。
  */
 export type ChannelHealth = {
   id: string;
@@ -463,22 +474,37 @@ export type ChannelHealth = {
   accountCount: number;
   /** 网关运行态；网关不可用时为 null。 */
   readyAccounts: number | null;
-  requests: number;
+  /** 窗口内的**探活次数**（按分组 × 模型逐条累加），不是请求数。 */
+  probes: number;
+  /** 窗口内的探活成功率（0–1）；没有探活记录时为 null。 */
   successRate: number | null;
-  avgTtftMs: number | null;
+  /** 探活的平均端到端耗时。 */
   avgLatencyMs: number | null;
-  totalTokens: number;
-  billedCost: number;
-  /** 最近请求状态，旧 → 新，值原样来自 usage_logs.status。 */
+  /**
+   * 最近 60 次探活状态，旧 → 新，值原样来自 `channel_probes.status`
+   * （`ok` / `limited` / `auth` / `quota` / `error`）。
+   *
+   * 一格 = 一次探活，不受上方统计窗口影响：选「24 小时」时格子不会突然变少。
+   */
   recent: string[];
+  /** 最近一次探活时刻（RFC3339）；从未探过为 null。 */
+  lastProbeAt: string | null;
+  /** 最近一次**探活失败**的原因；没有失败为 null。 */
   lastError: string | null;
   lastErrorAt: string | null;
   /**
-   * 探活使用的对外模型名；空 = 由网关按「免费优先」自动挑。
+   * 探活实际使用的对外模型名；空 = 由网关按「免费优先」自动挑。
    *
    * 允许指定是因为"免费模型通了"不等于"真实模型能通"。
    */
   probeModel: string;
+  /**
+   * 这个分组**全部**要探的模型（`probe_models` 与 `probe_model` 的并集）。
+   *
+   * 卡片要列全：只显示一个会让人以为另外几个没在探，
+   * 也就解释不了"探活次数为什么比轮数多"。
+   */
+  probeModels: string[];
 };
 
 /** 一段区间内的累计指标。 */

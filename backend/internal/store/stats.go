@@ -5,12 +5,23 @@ import (
 	"fmt"
 	"math"
 	"time"
+
+	"relayai/backend/internal/models"
 )
 
 // ChannelHealth 是单个渠道的健康视图（「渠道状态」页的一张卡片）。
 //
-// 设计原则：**能测到什么就只显示什么**。没有请求过的渠道，
+// 设计原则：**能测到什么就只显示什么**。没有探测过的渠道，
 // 成功率与延迟返回 nil（界面显示 `—`），不要填 0 —— 0% 会让人以为渠道挂了。
+//
+// 口径（2026-10-30 起）：卡片上的**所有**指标都来自定时探活 `channel_probes`，
+// 不再混用真实请求 `usage_logs`。
+//
+// 为什么必须换：两套数据节奏完全不同 —— 探活按间隔（最低 5 分钟）一条，
+// 真实请求随流量起伏。曾经底部细条取 usage_logs 的最近 60 条请求，
+// 于是"请求来得快"被读成"探活没按 5 分钟跑"；而旁边的百分比又是请求成功率，
+// 与探活模型并排显示时，用户没法判断那个绿格子代表什么。
+// 一次探活一格 + 同一个口径的百分比，才能被正确解读。
 type ChannelHealth struct {
 	ID      string `json:"id"`
 	Name    string `json:"name"`
@@ -22,40 +33,57 @@ type ChannelHealth struct {
 	// 可用账号数来自网关运行态；网关不可用时为 nil。
 	ReadyAccounts *int `json:"readyAccounts"`
 
-	// 窗口内统计（默认近 7 天）。
-	Requests     int64    `json:"requests"`
-	SuccessRate  *float64 `json:"successRate"`
-	AvgTtftMs    *int     `json:"avgTtftMs"`
-	AvgLatencyMs *int     `json:"avgLatencyMs"`
-	TotalTokens  int64    `json:"totalTokens"`
-	BilledCost   float64  `json:"billedCost"`
+	// 窗口内的探活统计（默认近 7 天，按 (分组, 模型) 逐条累加）。
+	//
+	// Probes 是窗口内的**探测条数**，不是请求数：一个分组探两个模型，
+	// 一轮就是 2 条。界面用它说明"样本量"，不拿它冒充流量。
+	Probes      int64    `json:"probes"`
+	SuccessRate *float64 `json:"successRate"`
+	// AvgLatencyMs 是探活的端到端耗时。
+	//
+	// 不再有 AvgTtftMs：探活只关心"通不通、多久回来"，
+	// 上游不保证返回首字时间，留着那个字段只会让人以为它在测首字。
+	AvgLatencyMs *int `json:"avgLatencyMs"`
 
-	// 最近若干次请求的状态（旧 → 新），用于卡片底部那条细条。
-	// 值为 usage_logs.status 原样（completed / failed / …），
+	// 最近若干次探活的状态（旧 → 新），用于卡片底部那条细条。
+	//
+	// 值为 channel_probes.status 原样（ok / limited / auth / quota / error），
 	// 不在这里做"成功/失败"归类：归类是展示决策，属于前端。
 	Recent []string `json:"recent"`
 
-	// 最近一次失败的原因原文（没有失败则为 nil）。
+	// 最近一次探活时刻（RFC3339；从未探过则为 nil）。
+	LastProbeAt *string `json:"lastProbeAt"`
+	// 最近一次**失败**探活的原因原文（没有失败则为 nil）。
 	LastError *string `json:"lastError"`
 	LastErrorAt *string `json:"lastErrorAt"`
 
-	// ProbeModel 是这个分组**探活时使用的模型**。
+	// ProbeModel 是这个分组**探活时使用的模型**（取调度器实际会探的第一个）。
 	//
 	// 空字符串 = 没有指定，由网关按「免费优先」自动挑。
 	// 为什么允许指定：有些分组的免费模型并不代表真实能力（比如只挂了推理模型），
 	// 用免费档探活会给出"通"的假象，而真实请求仍会失败。
 	ProbeModel string `json:"probeModel"`
+	// ProbeModels 是这个分组**全部**要探的模型（`probe_models` 与 `probe_model`
+	// 的并集，去重排序）。
+	//
+	// 为什么要列全：一个分组可以探多个模型，只显示一个会让人以为"另外几个没在探"，
+	// 也就看不出"探活次数为什么比轮数多"。
+	ProbeModels []string `json:"probeModels"`
 }
 
 // channelHealthRecentLimit 是卡片细条上的格数。
 //
 // 60 与参考实现一致：再多就不是"一眼看出刚才有没有抖"，
 // 而是变成一张需要仔细看的图，失去了卡片的意义。
+//
+// 现在一格 = 一次探活，所以满格代表的时长 = 60 × 探活间隔：
+// 5 分钟间隔下是 5 小时。这比"最近 60 条请求"有意义得多 ——
+// 后者在忙时会压缩到几分钟，闲时又可能横跨几天。
 const channelHealthRecentLimit = 60
 
 // ListChannelHealth 返回全部渠道的健康统计。
 //
-// 窗口从 `from` 起算（零值则取近 7 天）。三处查询共用同一个窗口，
+// 窗口从 `from` 起算（零值则取近 7 天）。三处查询共用同一个窗口与同一张表，
 // 否则卡片上的成功率与细条格数会对不上，用户会怀疑数据是假的。
 func (s *Store) ListChannelHealth(ctx context.Context, from time.Time) ([]ChannelHealth, error) {
 	if from.IsZero() {
@@ -75,23 +103,35 @@ func (s *Store) ListChannelHealth(ctx context.Context, from time.Time) ([]Channe
 		index[list[position].ID] = position
 	}
 
-	if err := s.attachChannelUsage(ctx, list, index, from); err != nil {
+	if err := s.attachChannelProbeStats(ctx, list, index, from); err != nil {
 		return nil, err
 	}
-	if err := s.attachChannelRecent(ctx, list, index, from); err != nil {
+	if err := s.attachChannelRecentProbes(ctx, list, index); err != nil {
 		return nil, err
 	}
-	if err := s.attachChannelLastError(ctx, list, index); err != nil {
+	if err := s.attachChannelLastProbeError(ctx, list, index); err != nil {
 		return nil, err
 	}
 
 	return list, nil
 }
 
-// listChannelBase 取渠道基本信息与账号数。
+// listChannelBase 取渠道基本信息、账号数与**探活模型**。
+//
+// ProbeModels 是 `probe_models` 与 `probe_model` 的并集（与调度器的选取口径
+// `ProbeTargets` 完全一致）；ProbeModel 取其中第一个，供卡片上那一行文字用。
+// 两边口径必须一致，否则界面写的和定时探活实际探的是两回事。
 func (s *Store) listChannelBase(ctx context.Context) ([]ChannelHealth, error) {
 	const query = `
-		SELECT c.id, c.name, c.adapter, c.enabled, COALESCE(a.cnt, 0), COALESCE(c.probe_model, '')
+		SELECT c.id, c.name, c.adapter, c.enabled, COALESCE(a.cnt, 0),
+		       ARRAY(
+		           SELECT DISTINCT model FROM unnest(
+		               COALESCE(c.probe_models, ARRAY[]::text[])
+		               || COALESCE(ARRAY[c.probe_model], ARRAY[]::text[])
+		           ) AS model
+		           WHERE model <> ''
+		           ORDER BY model
+		       ) AS probe_models
 		FROM channels c
 		LEFT JOIN (
 			SELECT channel_id, count(*) AS cnt FROM accounts GROUP BY channel_id
@@ -107,58 +147,70 @@ func (s *Store) listChannelBase(ctx context.Context) ([]ChannelHealth, error) {
 	list := make([]ChannelHealth, 0, 8)
 	for rows.Next() {
 		var item ChannelHealth
+		var probeModels models.TextArray
 		if err := rows.Scan(
-			&item.ID, &item.Name, &item.Adapter, &item.Enabled, &item.AccountCount, &item.ProbeModel,
+			&item.ID, &item.Name, &item.Adapter, &item.Enabled, &item.AccountCount, &probeModels,
 		); err != nil {
 			return nil, fmt.Errorf("扫描渠道健康度失败: %w", err)
 		}
 		item.Recent = []string{}
+		item.ProbeModels = orEmptyText(probeModels)
+		if len(item.ProbeModels) > 0 {
+			item.ProbeModel = item.ProbeModels[0]
+		}
 		list = append(list, item)
 	}
 
 	return list, rows.Err()
 }
 
-// attachChannelUsage 填窗口内的聚合指标。
+// attachChannelProbeStats 填窗口内的探活聚合指标。
 //
-// 拒绝行必须排除（SPEC 5.5）：它们没有真实归属，混进来会把成功率压低，
-// 而用户看到的"渠道可用性"应该是"这个渠道的服务质量"，不是"我 Key 配错了"。
-func (s *Store) attachChannelUsage(
+// 口径说明：
+//   - 来源是 `channel_probes`，与「探活模型」「探活间隔」完全同源；
+//   - 按 (channel, model) 逐条累加 —— 一个分组探 2 个模型，一轮算 2 条样本。
+//     这不是"夸大"，而是如实反映"这个分组被确认了几次"；
+//   - 成功率 = `ok` 为真的比例。`limited`（限流）算失败：那一刻模型确实不能用，
+//     把它算成功会掩盖问题；具体原因在卡片底部的失败原文里能看到。
+func (s *Store) attachChannelProbeStats(
 	ctx context.Context,
 	list []ChannelHealth,
 	index map[string]int,
 	from time.Time,
 ) error {
+	/*
+		`LastProbeAt` 用**不带窗口**的子查询：窗口只约束"这段区间里探得怎么样"，
+		而"最近一次探活是什么时候"是卡片上判断数据新不新的关键，
+		选「24 小时」时不该因为上次探活在 2 天前就显示成"还未探活"。
+
+		延迟只统计成功的、且非 0 的行：失败记录通常记 0 毫秒，
+		混进平均值会让探活看起来比实际快。
+	*/
 	const query = `
-		SELECT channel_id,
+		SELECT p.channel_id,
 		       count(*),
-		       avg(CASE WHEN status = 'completed' THEN 1.0 ELSE 0.0 END)::float8,
-		       avg(ttft_ms)::float8,
-		       avg(total_ms)::float8,
-		       COALESCE(sum(total_tokens), 0),
-		       COALESCE(sum(billed_cost), 0)::float8
-		FROM usage_logs
-		WHERE NOT is_rejection AND ts >= $1
-		GROUP BY channel_id`
+		       avg(CASE WHEN p.ok THEN 1.0 ELSE 0.0 END)::float8,
+		       avg(CASE WHEN p.ok THEN NULLIF(p.latency_ms, 0) END)::float8,
+		       (SELECT max(last.checked_at) FROM channel_probes last
+		         WHERE last.channel_id = p.channel_id)
+		FROM channel_probes p
+		WHERE p.checked_at >= $1
+		GROUP BY p.channel_id`
 
 	rows, err := s.db.WithContext(ctx).Raw(query, from).Rows()
 	if err != nil {
-		return fmt.Errorf("统计渠道用量失败: %w", err)
+		return fmt.Errorf("统计分组探活失败: %w", err)
 	}
 	defer rows.Close()
 
 	for rows.Next() {
 		var channelID string
-		var requests int64
-		var successRate, avgTtft, avgLatency *float64
-		var totalTokens int64
-		var billedCost float64
+		var probes int64
+		var successRate, avgLatency *float64
+		var lastAt any
 
-		if err := rows.Scan(
-			&channelID, &requests, &successRate, &avgTtft, &avgLatency,
-			&totalTokens, &billedCost,
-		); err != nil {
-			return fmt.Errorf("扫描渠道用量失败: %w", err)
+		if err := rows.Scan(&channelID, &probes, &successRate, &avgLatency, &lastAt); err != nil {
+			return fmt.Errorf("扫描分组探活失败: %w", err)
 		}
 
 		position, ok := index[channelID]
@@ -168,47 +220,49 @@ func (s *Store) attachChannelUsage(
 		}
 
 		item := &list[position]
-		item.Requests = requests
+		item.Probes = probes
 		item.SuccessRate = successRate
-		item.AvgTtftMs = roundToInt(avgTtft)
 		item.AvgLatencyMs = roundToInt(avgLatency)
-		item.TotalTokens = totalTokens
-		item.BilledCost = billedCost
+		formatted := formatTime(lastAt)
+		if formatted != "" {
+			item.LastProbeAt = &formatted
+		}
 	}
 
 	return rows.Err()
 }
 
-// attachChannelRecent 填卡片底部细条的数据。
-func (s *Store) attachChannelRecent(
+// attachChannelRecentProbes 填卡片底部细条的数据（一格 = 一次探活）。
+//
+// 不受窗口限制：窗口选「24 小时」时，细条仍应显示最近 60 次探活，
+// 否则格子会突然变少，看起来像"探活停了"。窗口只约束上方的可用性百分比。
+func (s *Store) attachChannelRecentProbes(
 	ctx context.Context,
 	list []ChannelHealth,
 	index map[string]int,
-	from time.Time,
 ) error {
 	const query = `
 		SELECT channel_id, status
 		FROM (
-			SELECT channel_id, status, ts, id,
+			SELECT channel_id, status, checked_at, id,
 			       row_number() OVER (
-			           PARTITION BY channel_id ORDER BY ts DESC, id DESC
+			           PARTITION BY channel_id ORDER BY checked_at DESC, id DESC
 			       ) AS position
-			FROM usage_logs
-			WHERE NOT is_rejection AND ts >= $1
+			FROM channel_probes
 		) recent
-		WHERE position <= $2
-		ORDER BY channel_id, ts, id`
+		WHERE position <= $1
+		ORDER BY channel_id, checked_at, id`
 
-	rows, err := s.db.WithContext(ctx).Raw(query, from, channelHealthRecentLimit).Rows()
+	rows, err := s.db.WithContext(ctx).Raw(query, channelHealthRecentLimit).Rows()
 	if err != nil {
-		return fmt.Errorf("查询渠道最近请求失败: %w", err)
+		return fmt.Errorf("查询分组最近探活失败: %w", err)
 	}
 	defer rows.Close()
 
 	for rows.Next() {
 		var channelID, status string
 		if err := rows.Scan(&channelID, &status); err != nil {
-			return fmt.Errorf("扫描渠道最近请求失败: %w", err)
+			return fmt.Errorf("扫描分组最近探活失败: %w", err)
 		}
 		if position, ok := index[channelID]; ok {
 			list[position].Recent = append(list[position].Recent, status)
@@ -218,23 +272,24 @@ func (s *Store) attachChannelRecent(
 	return rows.Err()
 }
 
-// attachChannelLastError 填最近一次失败的原因。
-func (s *Store) attachChannelLastError(
+// attachChannelLastProbeError 填最近一次**探活失败**的原因。
+//
+// 只取 `ok = false` 的行：`status = 'ok'` 时 `message` 是空串，
+// 拿它当"最近错误"会让卡片显示一条空白的红色提示。
+func (s *Store) attachChannelLastProbeError(
 	ctx context.Context,
 	list []ChannelHealth,
 	index map[string]int,
 ) error {
 	const query = `
-		SELECT DISTINCT ON (channel_id) channel_id, error_detail, ts
-		FROM usage_logs
-		WHERE NOT is_rejection
-		  AND status <> 'completed'
-		  AND error_detail IS NOT NULL
-		ORDER BY channel_id, ts DESC`
+		SELECT DISTINCT ON (channel_id) channel_id, message, checked_at
+		FROM channel_probes
+		WHERE NOT ok
+		ORDER BY channel_id, checked_at DESC, id DESC`
 
 	rows, err := s.db.WithContext(ctx).Raw(query).Rows()
 	if err != nil {
-		return fmt.Errorf("查询渠道最近错误失败: %w", err)
+		return fmt.Errorf("查询分组最近探活失败原因失败: %w", err)
 	}
 	defer rows.Close()
 
@@ -242,7 +297,7 @@ func (s *Store) attachChannelLastError(
 		var channelID, detail string
 		var ts any
 		if err := rows.Scan(&channelID, &detail, &ts); err != nil {
-			return fmt.Errorf("扫描渠道最近错误失败: %w", err)
+			return fmt.Errorf("扫描分组最近探活失败原因失败: %w", err)
 		}
 		if position, ok := index[channelID]; ok {
 			list[position].LastError = &detail
