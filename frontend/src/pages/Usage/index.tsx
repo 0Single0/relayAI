@@ -29,8 +29,10 @@ const PAGE_SIZE = 50;
 /**
  * 协议的中文标签。
  *
- * 显示**入站端点**而不是协议代号：用户关心的是"我从哪个接口打进来的"，
- * `/v1/chat/completions` 比 `chat` 更能直接对上他代码里的 URL。
+ * `usage_logs.protocol` 记的是**入站端点**（客户端打到网关的哪个入口），
+ * 不是账号的上游协议（账号是 `openai-chat` / `openai-responses` / `anthropic`）。
+ * 所以这里翻译成 URL 形状：用户关心的是"我从哪个接口打进来的"，
+ * `/v1/messages` 比 `anthropic` 更能直接对上他代码里的地址。
  */
 const protocolLabel = (protocol: UsageLog["protocol"]) => {
   switch (protocol) {
@@ -92,6 +94,7 @@ const exportRows = (logs: UsageLog[]) => {
   const header = [
     "时间",
     "模型",
+    "入口",
     "渠道",
     "Key",
     "输入",
@@ -108,6 +111,8 @@ const exportRows = (logs: UsageLog[]) => {
   const rows = logs.map((log) => [
     new Date(log.ts).toISOString(),
     log.model,
+    // 拒绝行没有真正打到上游，入口一栏留空（与表格里的「—」一致）。
+    log.isRejection ? "" : protocolLabel(log.protocol),
     log.channelId,
     log.keyName ?? "",
     log.promptTokens,
@@ -220,8 +225,13 @@ export const UsagePage = () => {
     },
     {
       key: "endpoint",
-      header: "端点",
-      width: "150px",
+      // 这一列是**入站入口**，不是上游协议：网关三个入口共用一条记账路径，
+      // 只有 `usage_logs.protocol` 能区分它们。表头写「入口」是为了和
+      // 账号配置里的「上游协议」区分开 —— 两者同名过一次，结果读数全是错的。
+      header: "入口",
+      // 三条路径都要能完整显示：`/v1/chat/completions` 最短也要 148px 才不被截断，
+      // 截断成 `/v1/chat/completi…` 后三条路径看起来像同一个，等于没区分。
+      width: "168px",
       hideOnMobile: true,
       render: (log) =>
         // 未调度的行没有真正打到上游，端点信息对排查没有价值，

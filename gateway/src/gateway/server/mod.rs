@@ -27,6 +27,23 @@ use crate::gateway::{
     timeutil::now_ms,
 };
 
+/*
+入站入口 → `usage_logs.protocol` 的取值。
+
+这三个值是**入口**（客户端打进来用的是哪套协议），不是账号的上游协议
+（那是 `openai-chat` / `openai-responses` / `anthropic`）。两者一度同名，
+于是三个 handler 各自把 `protocol` 写死成 `"chat"`：结果 Anthropic / Responses
+的流量在用量页、仪表盘、协议分布里全都显示成 `/v1/chat/completions`，
+分布图也永远只有一个桶。
+
+集中在常量里是为了让「哪个入口对应哪个值」只有一处定义，
+新增入口时漏改会立刻表现为测试失败，而不是等用户看报表时才发现。
+取值必须与 `usage_protocol_check` 约束的枚举一致。
+*/
+pub(super) const PROTOCOL_CHAT: &str = "chat";
+pub(super) const PROTOCOL_RESPONSES: &str = "responses";
+pub(super) const PROTOCOL_ANTHROPIC: &str = "anthropic";
+
 /// 路由表。
 ///
 /// `internal_token` 是 Go 管理面与本进程之间的共享密钥（`/internal/*` 用）。
@@ -129,6 +146,7 @@ async fn bind_with_fallback(port: u16, allow_lan: bool) -> Result<tokio::net::Tc
 pub(super) fn record_rejection(
     state: &SharedGateway,
     path: &str,
+    protocol: &str,
     error: &crate::gateway::errors::GatewayError,
 ) {
     let label = match error.kind {
@@ -148,7 +166,7 @@ pub(super) fn record_rejection(
         upstream_model: None,
         channel_id: "-".into(),
         account_uid: "-".into(),
-        protocol: "chat".into(),
+        protocol: protocol.into(),
         status: "rejected".into(),
         is_rejection: true,
         stream: false,
@@ -199,4 +217,60 @@ async fn health(State(state): State<SharedGateway>) -> Response {
         "readyAccounts": ready_accounts,
     }))
     .into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{PROTOCOL_ANTHROPIC, PROTOCOL_CHAT, PROTOCOL_RESPONSES};
+
+    /// 入库值必须落在 `usage_protocol_check` 的枚举里，否则请求会被
+    /// CHECK 约束直接拒掉 —— 而用量是异步落库的，失败只打日志，
+    /// 表现为"面板上少了一条"，很难查到根因。
+    const ALLOWED: [&str; 3] = ["chat", "responses", "anthropic"];
+
+    #[test]
+    fn entry_protocols_are_distinct_and_allowed_by_the_check_constraint() {
+        let used = [PROTOCOL_CHAT, PROTOCOL_RESPONSES, PROTOCOL_ANTHROPIC];
+
+        for protocol in used {
+            assert!(
+                ALLOWED.contains(&protocol),
+                "{protocol} 不在 usage_protocol_check 的枚举里"
+            );
+        }
+
+        // 三个入口若共用同一个值，协议分布就永远只有一个桶 ——
+        // 这正是"用 Anthropic 也显示 /v1/chat/completions"的成因。
+        let unique: std::collections::HashSet<_> = used.iter().collect();
+        assert_eq!(unique.len(), used.len(), "三个入口的 protocol 必须互不相同");
+    }
+
+    /// 结构性守卫：三个 handler 必须各自传自己的常量。
+    ///
+    /// 光有上面的常量测试挡不住"某个 handler 又写死成 chat" ——
+    /// 那正是这次回归的形态（三处 `protocol: "chat".into()`）。
+    /// 用源码文本断言虽然朴素，但它只需要一次 `cargo test` 就能抓到复发。
+    #[test]
+    fn each_handler_records_its_own_entry_protocol() {
+        let cases = [
+            (include_str!("openai.rs"), "super::PROTOCOL_CHAT", "openai.rs"),
+            (
+                include_str!("anthropic.rs"),
+                "super::PROTOCOL_ANTHROPIC",
+                "anthropic.rs",
+            ),
+            (
+                include_str!("responses.rs"),
+                "super::PROTOCOL_RESPONSES",
+                "responses.rs",
+            ),
+        ];
+
+        for (source, needle, file) in cases {
+            assert!(
+                source.contains(needle),
+                "{file} 必须用 {needle} 记账，而不是写死协议名"
+            );
+        }
+    }
 }

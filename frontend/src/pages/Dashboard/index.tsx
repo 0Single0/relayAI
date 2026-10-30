@@ -206,10 +206,12 @@ export const DashboardPage = () => {
   }, [overview?.byChannel]);
 
   const protocolDonut = useMemo<DonutDatum[]>(() => {
+    // 与 usage_logs.protocol 的取值一一对应：写路径上的三个入口。
+    // 标签带路径前缀，读者不必再回去查"Chat Completions 是哪个 URL"。
     const labels: Record<string, string> = {
-      chat: "Chat Completions",
-      anthropic: "Anthropic Messages",
-      responses: "OpenAI Responses",
+      chat: "/v1/chat/completions",
+      anthropic: "/v1/messages",
+      responses: "/v1/responses",
     };
     const palette = ["var(--chart-1)", "var(--chart-2)", "var(--chart-4)"];
     return (overview?.byProtocol ?? []).map((bucket, index) => ({
@@ -532,7 +534,7 @@ export const DashboardPage = () => {
 
         {/* 端点分布 / 渠道构成 / 模型排行：一行三块 */}
         <div className="mt-3 grid grid-cols-1 gap-3 xl:grid-cols-3">
-          <PageSection title="端点分布" description="三个入口各自承担多少流量">
+          <PageSection title="入口分布" description="三个入站端点各自承担多少流量">
             <DonutWithLegend
               data={protocolDonut}
               centerLabel="请求"

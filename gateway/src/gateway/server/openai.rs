@@ -43,7 +43,12 @@ pub async fn chat_completions(
     match run_chat(state, headers, body).await {
         Ok(response) => response,
         Err(error) => {
-            crate::gateway::server::record_rejection(&recorder, "/v1/chat/completions", &error);
+            crate::gateway::server::record_rejection(
+                &recorder,
+                "/v1/chat/completions",
+                super::PROTOCOL_CHAT,
+                &error,
+            );
             error.into_response()
         }
     }
@@ -103,6 +108,7 @@ async fn run_chat(
         stream: streaming,
         started,
         key_id: key.key_id,
+        protocol: super::PROTOCOL_CHAT,
         // 内容留存默认关闭（隐私敏感）。打开时把请求侧的语义内容序列化下来。
         request_payload: super::payload::request_json(&state, &request).await,
     };
@@ -188,6 +194,12 @@ pub async fn list_models(
 pub(super) struct CompletionMeta {
     pub(super) model: String,
     pub(super) effort: Option<String>,
+    /// 入站协议（`chat` / `responses` / `anthropic`），落进 `usage_logs.protocol`。
+    ///
+    /// 必须是每个入口自己填的值，不能在这里写死：三个入口共用 `record_usage`，
+    /// 写死成 `chat` 会让 Anthropic / Responses 的流量在用量页和仪表盘
+    /// 全都显示成 `/v1/chat/completions`，协议分布也只剩一个桶。
+    pub(super) protocol: &'static str,
     /// 请求的输入 token 估算值（上游不给 usage 时用）。
     pub(super) prompt_tokens: u64,
     pub(super) stream: bool,
@@ -407,7 +419,7 @@ pub(super) fn record_usage(
         upstream_model: Some(session.selection.route.upstream_model.clone()),
         channel_id,
         account_uid: session.account().key.uid.clone(),
-        protocol: "chat".into(),
+        protocol: meta.protocol.into(),
         status: status.to_string(),
         is_rejection: false,
         stream: meta.stream,

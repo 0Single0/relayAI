@@ -43,7 +43,12 @@ pub async fn messages(
     match run(state, headers, body).await {
         Ok(response) => response,
         Err(error) => {
-            crate::gateway::server::record_rejection(&recorder, "/v1/messages", &error);
+            crate::gateway::server::record_rejection(
+                &recorder,
+                "/v1/messages",
+                super::PROTOCOL_ANTHROPIC,
+                &error,
+            );
             error.into_response()
         },
     }
@@ -130,6 +135,7 @@ async fn run(
         stream: streaming,
         started,
         key_id: key.key_id,
+        protocol: super::PROTOCOL_ANTHROPIC,
         request_payload: super::payload::request_json(&state, &request).await,
     };
 
