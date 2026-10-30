@@ -367,19 +367,15 @@ pub fn refine(status: u16, body: &str, upstream_model: &str) -> GatewayError {
         )
         .with_upstream(openai_compat::raw(body));
     }
-    // 渠道校验拦截要单独认出来：它不是"请求不合法"，重试（换号）就能过。
-    // 真机抓包（字节级）确认错误码是**纯数字 11-128**（{"code":11-128,...}）——
-    // 一直以来写成 "11-128"（带连字符）是被最初贴报文时的书写误导，整整 4 轮
-    // 都在匹配一个不存在的字符串，这就是"修了还拦"的根本原因。
-    // 参考项目注释里的 "11-128" 是同一个误读；它的 SANITIZE_FEATURES 里那个
-    // "11-128" 字面量匹配的是**正文回显**（上游错误被客户端塞回对话时才出现）。
+    // 渠道校验单独分类，允许有限重试但不惩罚账号。
+    // 客户端文本和出站身份不兼容都可能稳定触发，不能承诺换号即可恢复。
     let lowered = body.to_ascii_lowercase();
     if lowered.contains("11128") || lowered.contains("unapproved channel") {
         return GatewayError::new(
             ErrorKind::ChannelBlocked,
             ErrorScope::Request,
             429,
-            "上游渠道校验拦截（该判定带随机性，重试即可；换账号重试更稳）",
+            "上游渠道校验拦截：请检查客户端请求的兼容性及出站身份配置",
             true,
         )
         .with_upstream(openai_compat::raw(body));
@@ -607,17 +603,15 @@ mod tests {
         assert_eq!(refine(403, r#"{"code":999,"requestId":"11140"}"#, "m").kind, ErrorKind::ContentPolicy);
     }
 
-    /// 11-128（渠道校验拦截）：**字符串码**，带连字符，数值扫描认不到。
-    /// 真机 A/B：同一报文一次放行一次被拦、随后 16 连发 0 拦 —— 随机判定，
-    /// 所以正确分类是"可重试"，而不是"请求不合法"（换号重试能过）。
+    /// 渠道校验保留请求级错误、重试标记和上游原文。
     #[test]
     fn channel_block_11_128_is_retryable_request_scope() {
-        // 真机报文（字节级核对过）：code 是纯数字 11-128。
-    let body = r#"{"code":11-128,"msg":"Illegal API invocation from an unapproved channel","displayTips":{"zh":"请求被拦截，请重新发送"}}"#;
+        let body = r#"{"code":11128,"msg":"Illegal API invocation from an unapproved channel","displayTips":{"zh":"请求被拦截，请重新发送"}}"#;
         let error = refine(400, body, "glm-5.3");
         assert_eq!(error.kind, ErrorKind::ChannelBlocked);
         assert_eq!(error.scope, ErrorScope::Request);
-        assert!(error.retryable, "重试（最好换号）就能过");
+        assert!(error.retryable);
+        assert!(!error.message.contains("随机"));
         assert!(error.upstream.as_deref().is_some_and(|raw| raw.contains("unapproved")));
         // 英文措辞也要认。
         let plain = refine(400, "Illegal API invocation from an unapproved channel", "glm-5.3");
