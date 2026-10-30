@@ -505,7 +505,13 @@ type DailyAction struct {
 
 // TaskAccountLive 是单个账号的任务快照。
 type TaskAccountLive struct {
-	UID          string        `json:"uid"`
+	UID string `json:"uid"`
+	// ChannelID 是该账号**当前所在分组**；空串 = 未分配（待分配）。
+	//
+	// 为什么必须透出：任务页按版本取号，同一页里会有来自不同分组
+	// 甚至没分组的号。执行与取消要落到具体分组，不能拿页面那个
+	// "代表分组"去套 —— 那会把 A 组的号当成 B 组的号发出去。
+	ChannelID    string        `json:"channelId"`
 	Nickname     string        `json:"nickname"`
 	Enabled      bool          `json:"enabled"`
 	CredentialOK bool          `json:"credentialOk"`
@@ -535,9 +541,11 @@ type GrowthSnapshot struct {
 	LotteryChances *int64  `json:"lotteryChances"`
 }
 
-// TaskChannelLive 是一个渠道的任务快照。
+// TaskChannelLive 是一个渠道（或一个版本）的任务快照。
 type TaskChannelLive struct {
-	ChannelID string            `json:"channelId"`
+	ChannelID string `json:"channelId"`
+	// Realm 是按版本查询时回填的版本（cn / intl）；按分组查询时为空。
+	Realm     string            `json:"realm"`
 	FetchedAt int64             `json:"fetchedAt"`
 	Accounts  []TaskAccountLive `json:"accounts"`
 }
@@ -631,6 +639,20 @@ func (c *Client) SealSecret(ctx context.Context, plaintext string) (string, erro
 func (c *Client) GetTaskLive(ctx context.Context, channelID string) (*TaskChannelLive, error) {
 	var out TaskChannelLive
 	path := "/internal/tasks/channels/" + url.PathEscape(channelID) + "/live"
+	if err := c.get(ctx, path, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// GetTaskLiveByRealm 按**版本**拉任务快照（cn / intl）。
+//
+// 与 `GetTaskLive(channelID)` 的区别是**取号范围**：任务页回答的是
+// "这个版本今天有哪些任务、哪些号还没做"，所以要跨分组取全部同版本的号 ——
+// 包括**还没分配分组**的号（它们的 channel_id 是 NULL，不属于任何分组）。
+func (c *Client) GetTaskLiveByRealm(ctx context.Context, realm string) (*TaskChannelLive, error) {
+	var out TaskChannelLive
+	path := "/internal/tasks/realms/" + url.PathEscape(realm) + "/live"
 	if err := c.get(ctx, path, &out); err != nil {
 		return nil, err
 	}

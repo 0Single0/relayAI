@@ -3,6 +3,7 @@ package handler
 import (
 	"net/http"
 
+	"relayai/backend/internal/gateway"
 	"relayai/backend/internal/httpx"
 	"relayai/backend/internal/store"
 	"relayai/backend/internal/svc"
@@ -24,9 +25,25 @@ func registerTasks(mux *http.ServeMux, ctx *svc.ServiceContext) {
 	})
 
 	// 实时快照：代理网关（N 次上游请求，慢）。
+	//
+	// `{id}` 既可以是**版本**（`cn` / `intl`），也可以是**分组 id**。
+	//
+	// 为什么优先按版本：任务页的 URL 参数本来就是版本，而
+	// "这个版本今天有哪些任务"必须跨分组取号 —— 只按一个分组取，
+	// 没分配分组的号永远不显示，同版本建了两个分组时也只显示其中一个。
 	mux.HandleFunc("GET /tasks/channels/{id}/live", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
-		live, err := ctx.Gateway.GetTaskLive(r.Context(), r.PathValue("id"))
+		id := r.PathValue("id")
+
+		var (
+			live *gateway.TaskChannelLive
+			err  error
+		)
+		if id == "cn" || id == "intl" {
+			live, err = ctx.Gateway.GetTaskLiveByRealm(r.Context(), id)
+		} else {
+			live, err = ctx.Gateway.GetTaskLive(r.Context(), id)
+		}
 		if err != nil {
 			httpx.FailError(w, r, err)
 			return
@@ -34,7 +51,7 @@ func registerTasks(mux *http.ServeMux, ctx *svc.ServiceContext) {
 
 		// 把网关里"正在执行"的 run_id 补进来（网关内存里有，PG 里也有）。
 		for index := range live.Accounts {
-			run, err := ctx.Store.RunningTaskRun(r.Context(), r.PathValue("id"), live.Accounts[index].UID)
+			run, err := ctx.Store.RunningTaskRun(r.Context(), live.Accounts[index].UID)
 			if err == nil && run != nil {
 				live.Accounts[index].RunID = &run.ID
 				live.Accounts[index].Running = true
@@ -47,9 +64,15 @@ func registerTasks(mux *http.ServeMux, ctx *svc.ServiceContext) {
 	// 发起执行：按账号逐个代理（串行由网关保证）。
 	mux.HandleFunc("POST /tasks/runs", func(w http.ResponseWriter, r *http.Request) {
 		var input struct {
+			// ChannelID 是这批号默认所在分组。
+			//
+			// 现在它只是**兜底值**：每个账号可以自带 `channelId`
+			// （未分配分组的账号是空串），有就优先用账号自己的。
 			ChannelID   string   `json:"channelId"`
 			AccountUIDs []string `json:"accountUids"`
-			Scope       string   `json:"scope"`
+			// Accounts 带 UID + 所属分组，用于"同一页里有多个分组甚至没分组的号"。
+			Accounts []store.TaskAccountRef `json:"accounts"`
+			Scope    string                 `json:"scope"`
 			// Codes 非空时只跑这些任务码（界面「执行此任务」用）。
 			Codes []string `json:"codes"`
 		}
@@ -58,10 +81,6 @@ func registerTasks(mux *http.ServeMux, ctx *svc.ServiceContext) {
 			return
 		}
 
-		if input.ChannelID == "" || len(input.AccountUIDs) == 0 {
-			httpx.Fail(w, http.StatusBadRequest, "渠道与账号都不能为空")
-			return
-		}
 		if input.Scope == "" {
 			input.Scope = "all"
 		}
@@ -70,7 +89,26 @@ func registerTasks(mux *http.ServeMux, ctx *svc.ServiceContext) {
 			return
 		}
 
-		batchID, runs, err := ctx.Store.StartTaskRuns(r.Context(), input.ChannelID, input.AccountUIDs, input.Scope)
+		/*
+		  目标账号清单：优先用 `accounts`（带分组），否则退回
+		  `accountUids` + 顶层 `channelId`（老请求的形状）。
+
+		  为什么不能只留 `accountUids`：账号可以不属于任何分组，
+		  而 `task_runs.channel_id` 非空、网关也按 (分组, uid) 定位账号；
+		  统一用顶层 channelId 会把"待分配"的号发到错误的分组上。
+		*/
+		refs := input.Accounts
+		if len(refs) == 0 {
+			for _, uid := range input.AccountUIDs {
+				refs = append(refs, store.TaskAccountRef{UID: uid, ChannelID: input.ChannelID})
+			}
+		}
+		if len(refs) == 0 {
+			httpx.Fail(w, http.StatusBadRequest, "渠道与账号都不能为空")
+			return
+		}
+
+		batchID, runs, err := ctx.Store.StartTaskRuns(r.Context(), refs, input.Scope)
 		if err != nil {
 			httpx.FailError(w, r, err)
 			return
@@ -84,9 +122,10 @@ func registerTasks(mux *http.ServeMux, ctx *svc.ServiceContext) {
 		for _, item := range runs {
 			runID, _ := item["runId"].(int64)
 			accountUID, _ := item["accountUid"].(string)
+			channelID, _ := item["channelId"].(string)
 
 			started, reason, runErr := ctx.Gateway.StartTaskRun(
-				r.Context(), input.ChannelID, accountUID, input.Scope, input.Codes, runID,
+				r.Context(), channelID, accountUID, input.Scope, input.Codes, runID,
 			)
 			if runErr != nil {
 				httpx.FailError(w, r, runErr)
@@ -94,7 +133,7 @@ func registerTasks(mux *http.ServeMux, ctx *svc.ServiceContext) {
 			}
 			if !started {
 				// 该账号已在执行中：标记这条 run 为失败并说明原因，不阻塞其它账号。
-				_ = ctx.Store.FailTaskRun(r.Context(), input.ChannelID, accountUID, reason)
+				_ = ctx.Store.FailTaskRun(r.Context(), accountUID, reason)
 			}
 		}
 
@@ -187,9 +226,9 @@ func registerTasks(mux *http.ServeMux, ctx *svc.ServiceContext) {
 	// 单独领取：代理网关。
 	mux.HandleFunc("POST /tasks/claim", func(w http.ResponseWriter, r *http.Request) {
 		var input struct {
-			ChannelID string `json:"channelId"`
+			ChannelID  string `json:"channelId"`
 			AccountUID string `json:"accountUid"`
-			Code      string `json:"code"`
+			Code       string `json:"code"`
 		}
 		if err := httpx.Decode(r, &input); err != nil {
 			httpx.Fail(w, http.StatusBadRequest, err.Error())

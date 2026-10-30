@@ -200,7 +200,10 @@ CREATE TABLE channels (
 ```sql
 CREATE TABLE accounts (
     id                BIGSERIAL PRIMARY KEY,
-    channel_id        TEXT NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
+    -- 空 = 待分配：号已经建好，只是还没归到任何计价桶里。
+    -- 删分组时账号**保留**，这一列被置空（ON DELETE SET NULL），
+    -- 不是随分组一起消失 —— 账号是一份凭据，分组只是计价桶。
+    channel_id        TEXT REFERENCES channels(id) ON DELETE SET NULL,
     uid               TEXT NOT NULL,                -- 上游账号标识
     nickname          TEXT NOT NULL DEFAULT '',
     enabled           BOOLEAN NOT NULL DEFAULT true,
@@ -216,11 +219,18 @@ CREATE TABLE accounts (
     options           JSONB NOT NULL DEFAULT '{}',  -- 适配器私有参数（realm / outbound_identity）
     source            TEXT NOT NULL DEFAULT 'manual',
     added_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
-    UNIQUE (channel_id, uid)
+    UNIQUE (uid)                                    -- 一个上游账号在库里只有一条记录
 );
 
 CREATE INDEX accounts_by_channel ON accounts (channel_id, enabled);
 ```
+
+> **唯一约束是单列 `uid`，不是 `(channel_id, uid)`**：`channel_id` 可空，
+> 而 Postgres 里 `NULL <> NULL`，复合唯一索引对"待分配"的行不起作用。
+> 换分组是 UPDATE（迁移），不是新插一行 —— 否则历史 `usage_logs.account_uid` 会对不上。
+>
+> **未分配分组的账号不参与对外调度**（网关按分组取号，空分组下没有号可发），
+> 但**能出现在任务页**：任务按版本（`options.realm`）取号，不按分组。
 
 > **注意**：`accounts` 没有 `status` / `cooldown_until` 列。冷却与可用性是运行态（I5），不落库。
 > 账号"已删除"就是物理删除；历史 `usage_logs` 只保留 `account_uid` 字符串，不建外键。
@@ -575,7 +585,7 @@ GET    /api/v1/channels                 列表（含账号数、今日调用数�
 POST   /api/v1/channels                 新建
 GET    /api/v1/channels/:id             详情
 PATCH  /api/v1/channels/:id             更新
-DELETE /api/v1/channels/:id             删除（级联删账号，需二次确认）
+DELETE /api/v1/channels/:id             删除（组内账号变「待分配」，不删账号）
 POST   /api/v1/channels/:id/probe       探活（代理 Rust）
 GET    /api/v1/channels/:id/models      该渠道的模型目录（代理 Rust）
 ```
@@ -653,8 +663,9 @@ GET /api/v1/usage/series?from=&to=&model=&bucket=hour|day
 #### 任务
 
 ```
-GET  /api/v1/tasks/channels              有能力的渠道 + 账号数 + 今日待办
+GET  /api/v1/tasks/channels              有能力的分组 + 账号数 + 今日待办
 GET  /api/v1/tasks/channels/:id/live     实时快照（代理 Rust）
+                                         `:id` 可以是**版本**（cn / intl）或分组 id
 POST /api/v1/tasks/runs                  发起执行
 POST /api/v1/tasks/runs/:id/cancel
 GET  /api/v1/tasks/runs?channel=&account=&status=&page=
@@ -663,16 +674,28 @@ GET  /api/v1/tasks/runs/:id/stream       SSE 逐条进度
 POST /api/v1/tasks/claim                 单独领取
 ```
 
+> **按版本取号**：`/tasks/channels/cn/live` 返回**国内版全部账号**，
+> 包括还没分配分组的号；传具体分组 id 时只返回该分组的号（兼容用）。
+> 任务页的 URL 参数本来就是版本 —— 只按一个分组取号会让"待分配"的号永远不出现。
+
 `POST /tasks/runs` 请求体：
 
 ```json
-{ "channelId": "wb-cn", "accountUids": ["u_abc"], "scope": "all" }
+{
+  "accounts": [{ "uid": "u_abc", "channelId": "wb-cn" }],
+  "scope": "all",
+  "codes": []
+}
 ```
+
+> 账号必须**逐个带 `channelId`**（待分配时为空串）：同一页里可能混着多个分组的号，
+> 用一个页面级的"代表分组"会把待分配的号发到错误的分组上，网关就找不到账号。
+> 老形状 `{ "channelId": "...", "accountUids": ["..."] }` 仍然接受（当作所有号的默认分组）。
 
 `scope` 取值见第 9.2 节。响应：
 
 ```json
-{ "batchId": "uuid", "runs": [{ "runId": 12, "accountUid": "u_abc" }] }
+{ "batchId": "uuid", "runs": [{ "runId": 12, "accountUid": "u_abc", "channelId": "wb-cn" }] }
 ```
 
 #### 设置与状态
@@ -749,6 +772,7 @@ POST /internal/accounts/:key/login/start
 POST /internal/accounts/:key/login/poll
 POST /internal/accounts/:key/login/complete
 GET  /internal/tasks/channels/:id/live
+GET  /internal/tasks/realms/:realm/live   按版本（cn/intl）跨分组取号，含"待分配"的号
 POST /internal/tasks/run                  { channel_id, uid, scope, run_id }
 POST /internal/tasks/cancel               { channel_id, uid }
 GET  /internal/tasks/progress?channel_id=&uid=
@@ -943,6 +967,9 @@ src/
 - **最近失败**：最近 10 条 `failed` 的 run，点进 `/tasks/:channelId`。
 
 ### 9.8 渠道任务页 `/tasks/:channelId`
+
+> `:channelId` 是**版本**（`cn` / `intl`），不是分组 id。页面按版本跨分组取号，
+> 未分配分组的号同样出现在这一页（标「待分配」）。
 
 **主体是账号表**（不是任务表）：
 

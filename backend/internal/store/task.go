@@ -100,42 +100,61 @@ type TaskRunItem struct {
 	FinishedAt string `json:"finishedAt"`
 }
 
+// TaskAccountRef 是一次执行里的目标账号。
+//
+// 为什么要带 channelId：账号可以**不属于任何分组**（`channel_id IS NULL`），
+// 而 `task_runs.channel_id` 非空。只传 uid 的话，未分配分组的号既写不进
+// run 记录，也无法在执行历史里定位。空串表示"未分配"，不是错误。
+type TaskAccountRef struct {
+	UID       string `json:"uid"`
+	ChannelID string `json:"channelId"`
+}
+
 // StartTaskRuns 为一批账号创建 run 记录，返回批次 id 与 run 列表。
 func (s *Store) StartTaskRuns(
 	ctx context.Context,
-	channelID string,
-	accountUIDs []string,
+	refs []TaskAccountRef,
 	scope string,
 ) (string, []map[string]any, error) {
 	batchID := newBatchID()
-	runs := make([]map[string]any, 0, len(accountUIDs))
+	runs := make([]map[string]any, 0, len(refs))
 
-	for _, uid := range accountUIDs {
+	for _, ref := range refs {
 		const query = `
 			INSERT INTO task_runs (batch_id, channel_id, account_uid, scope, status, trigger)
 			VALUES ($1, $2, $3, $4, 'running', 'manual')
 			RETURNING id`
 
 		var id int64
-		if err := s.db.WithContext(ctx).Raw(query, batchID, channelID, uid, scope).Row().Scan(&id); err != nil {
+		if err := s.db.WithContext(ctx).
+			Raw(query, batchID, ref.ChannelID, ref.UID, scope).
+			Row().Scan(&id); err != nil {
 			return "", nil, fmt.Errorf("创建任务记录失败: %w", err)
 		}
 
-		runs = append(runs, map[string]any{"runId": id, "accountUid": uid})
+		runs = append(runs, map[string]any{
+			"runId":      id,
+			"accountUid": ref.UID,
+			"channelId":  ref.ChannelID,
+		})
 	}
 
 	return batchID, runs, nil
 }
 
 // RunningTaskRun 查该账号是否有执行中的 run。
-func (s *Store) RunningTaskRun(ctx context.Context, channelID, uid string) (*TaskRun, error) {
+//
+// 按 **uid** 定位而不是 (channel_id, uid)：账号换分组后，
+// 旧 run 记录的 channel_id 与新分组不同，按分组查会漏掉"其实还在跑"的号。
+func (s *Store) RunningTaskRun(ctx context.Context, uid string) (*TaskRun, error) {
 	const query = `
-		SELECT id FROM task_runs
-		WHERE channel_id = $1 AND account_uid = $2 AND status = 'running'
+		SELECT id, channel_id FROM task_runs
+		WHERE account_uid = $1 AND status = 'running'
 		ORDER BY started_at DESC LIMIT 1`
 
 	var id int64
-	err := s.db.WithContext(ctx).Raw(query, channelID, uid).Row().Scan(&id)
+	var channelID string
+	err := s.db.WithContext(ctx).Raw(query, uid).Row().Scan(&id, &channelID)
 	if err != nil {
 		return nil, err
 	}
@@ -144,11 +163,14 @@ func (s *Store) RunningTaskRun(ctx context.Context, channelID, uid string) (*Tas
 }
 
 // FailTaskRun 把 run 标成失败（例如"该账号已在执行中"）。
-func (s *Store) FailTaskRun(ctx context.Context, channelID, uid, reason string) error {
+//
+// 按 uid 定位最近一条 running：账号换分组后 run 上的 channel_id 是旧的，
+// 按分组过滤会把"其实还在跑"的号漏掉。
+func (s *Store) FailTaskRun(ctx context.Context, uid, reason string) error {
 	_, err := s.exec(ctx,
-		`UPDATE task_runs SET status = 'failed', error = $3, finished_at = now()
-		 WHERE channel_id = $1 AND account_uid = $2 AND status = 'running'`,
-		channelID, uid, reason,
+		`UPDATE task_runs SET status = 'failed', error = $2, finished_at = now()
+		 WHERE account_uid = $1 AND status = 'running'`,
+		uid, reason,
 	)
 	return err
 }
@@ -232,7 +254,8 @@ func (s *Store) ListTaskRuns(ctx context.Context, query TaskRunQuery) ([]TaskRun
 		       r.started_at, r.finished_at
 		FROM task_runs r
 		LEFT JOIN channels c ON c.id = r.channel_id
-		LEFT JOIN accounts a ON a.channel_id = r.channel_id AND a.uid = r.account_uid
+		-- 昵称按 uid 连：号可能已经换过分组，用 channel_id 连会退化成显示 uid。
+		LEFT JOIN accounts a ON a.uid = r.account_uid
 		%s
 		ORDER BY r.started_at DESC
 		LIMIT $%d OFFSET $%d`, where, len(listArgs)-1, len(listArgs))
@@ -275,7 +298,8 @@ func (s *Store) GetTaskRun(ctx context.Context, id int64) (*TaskRun, []TaskRunIt
 		       r.started_at, r.finished_at
 		FROM task_runs r
 		LEFT JOIN channels c ON c.id = r.channel_id
-		LEFT JOIN accounts a ON a.channel_id = r.channel_id AND a.uid = r.account_uid
+		-- 昵称按 uid 连：号可能已经换过分组，用 channel_id 连会退化成显示 uid。
+		LEFT JOIN accounts a ON a.uid = r.account_uid
 		WHERE r.id = $1`
 
 	var run TaskRun

@@ -1,10 +1,9 @@
 import { ListChecks, Play, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useParams, useSearchParams } from "react-router-dom";
 import {
   cancelTaskRun,
   getTaskChannelLive,
-  listTaskChannels,
   getTaskRun,
   startTaskRun,
 } from "@/api/tasks";
@@ -81,17 +80,13 @@ export const TaskChannelPage = () => {
 
     任务是一种产品能力，不该因为没建分组就没入口。版本决定显示哪套内容：
     国内版有成长任务 + 签到 + 猫猫旅行 + 抽奖，国际版只有每日活跃打卡。
-    具体用哪个分组执行，由分组自己的 realm 决定（同一版本可以有多个分组）。
+
+    **取号也按版本**，不按分组：账号是独立实体，可以还没分配分组，
+    也可以和别的分组混在同一版本里。只按一个分组取号，未分配分组的号
+    永远不会出现在这一页 —— 而那正是用户最需要看到"它还没归组"的地方。
   */
   const { channelId = "cn" } = useParams<{ channelId: string }>();
   const realm = channelId === "intl" ? "intl" : "cn";
-  /*
-    实际执行用的分组 id：挑第一个 realm 匹配且有账号的分组。
-
-    没匹配到就留空 —— 页面会显示"没有账号，先去添加"，而不是假装能执行。
-  */
-  const [targetChannel, setTargetChannel] = useState({ realm: "", id: "" });
-  const targetChannelId = targetChannel.realm === realm ? targetChannel.id : "";
 
   const [live, setLive] = useState<TaskChannelLive | null>(null);
   const [error, setError] = useState("");
@@ -100,34 +95,23 @@ export const TaskChannelPage = () => {
   const [accountSelection, setAccountSelection] = useState({ realm: "", uid: ALL_ACCOUNTS });
   const accountFilter = accountSelection.realm === realm ? accountSelection.uid : ALL_ACCOUNTS;
   const setAccountFilter = useCallback((uid: string) => setAccountSelection({ realm, uid }), [realm]);
+
+  /*
+    深链接：`/tasks/cn?account=<uid>` 直接定位到某个号。
+
+    账号详情页的「查看该账号的任务」用它。之前这个参数没人读 ——
+    链接跳过来仍然停在"全部账号"，用户还得自己在下拉里再找一次那个号。
+  */
+  const [searchParams] = useSearchParams();
+  const linkedAccount = searchParams.get("account") ?? "";
+  useEffect(() => {
+    if (linkedAccount) {
+      setAccountSelection({ realm, uid: linkedAccount });
+    }
+  }, [linkedAccount, realm]);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const requestSequence = useRef(0);
   const requestController = useRef<AbortController | null>(null);
-  /*
-    按版本找执行用的分组。
-
-    同一版本可能有多个分组（比如国内版挂了两个号池），这里取第一个
-    有账号的。**没有匹配的分组也不报错**：页面照常渲染，只是提示
-    "先去添加账号"—— 比直接 404 更清楚。
-  */
-  useEffect(() => {
-    let active = true;
-    void listTaskChannels()
-      .then((response) => {
-        if (!active) return;
-        const candidates = (response.data ?? []).filter((item) => {
-          const itemRealm = item.realm === "intl" ? "intl" : "cn";
-          return itemRealm === realm;
-        });
-        const withAccounts = candidates.find((item) => item.accountCount > 0);
-        setTargetChannel({ realm, id: (withAccounts ?? candidates[0])?.id ?? "" });
-      })
-      .catch(() => {
-        if (active) setTargetChannel({ realm, id: "" });
-      });
-    return () => { active = false; };
-  }, [realm, reloadKey]);
-
 
   const load = useCallback(async () => {
     const sequence = ++requestSequence.current;
@@ -136,19 +120,7 @@ export const TaskChannelPage = () => {
     requestController.current = controller;
     setIsLoading(true);
     try {
-      if (!targetChannelId) {
-        /*
-          这个版本还没有任何分组：不是错误，是"还没配"。
-
-          必须同时清掉 `error` —— 否则从国内版切到国际版时，
-          上一次的报错会残留下来，看起来像新页面也坏了。
-        */
-        setLive(null);
-        setError("");
-        setIsLoading(false);
-        return;
-      }
-      const response = await getTaskChannelLive(targetChannelId, controller.signal);
+      const response = await getTaskChannelLive(realm, controller.signal);
       if (sequence !== requestSequence.current || controller.signal.aborted) return;
       setLive(response.data ?? null);
       setError("");
@@ -159,7 +131,7 @@ export const TaskChannelPage = () => {
     } finally {
       if (sequence === requestSequence.current) setIsLoading(false);
     }
-  }, [targetChannelId]);
+  }, [realm]);
 
   useEffect(() => {
     void load();
@@ -221,15 +193,6 @@ export const TaskChannelPage = () => {
     return !hasTasks && !hasDaily ? "checkin" : "all";
   }, [accounts]);
 
-  /**
-   * 发起执行。
-   *
-   * `codes` 为空 = 跑整批（顶部的一键执行）；非空 = 只跑指定任务
-   * （行内「执行此任务」按钮）。
-   *
-   * 之前行内按钮也走整批，于是点"猫猫旅行"会把 21 项任务全跑一遍 ——
-   * 而那些已完成的会被静默跳过，用户看到的就是"点了没反应"。
-   */
   /**
    * 等这一批 run 跑完，然后用 toast 汇报结果。
    *
@@ -342,13 +305,23 @@ export const TaskChannelPage = () => {
         );
         return;
       }
+      /*
+        每个账号带上它**自己**的分组。
+
+        这一页按版本取号，同屏可能有多个分组、也可能有还没分配分组的号
+        （`channelId` 是空串）。统一用一个"代表分组"会把待分配的号
+        发到错误的分组上 —— 网关那边就找不到账号了。
+      */
+      const targets = uids.map((uid) => ({
+        uid,
+        channelId: accounts.find((account) => account.uid === uid)?.channelId ?? "",
+      }));
       // 只标记这次涉及的任务码；空 codes 表示整批，用一个哨兵值占位。
       const marker = codes.length > 0 ? codes : [ALL_CODES];
       setRunningCodes((prev) => [...new Set([...prev, ...marker])]);
       try {
         const response = await startTaskRun({
-          channelId: targetChannelId,
-          accountUids: uids,
+          accounts: targets,
           scope,
           codes,
         });
@@ -368,7 +341,7 @@ export const TaskChannelPage = () => {
         setRunningCodes((prev) => prev.filter((code) => !marker.includes(code)));
       }
     },
-    [targetChannelId, scope, reportRunOutcome],
+    [accounts, scope, reportRunOutcome],
   );
 
   const targetAccounts = useMemo(
@@ -419,7 +392,7 @@ export const TaskChannelPage = () => {
           const detail = row.accounts
             .map(
               (item) =>
-                `${item.nickname || item.uid}：${
+                `${item.nickname || item.uid}${item.channelId ? "" : "（待分配）"}：${
                   item.status === "done" ? "已完成" : `未完成（${item.progress}）`
                 }`,
             )
@@ -503,7 +476,9 @@ export const TaskChannelPage = () => {
               <SelectItem value={ALL_ACCOUNTS}>全部账号（{accounts.length}）</SelectItem>
               {accounts.map((account) => (
                 <SelectItem key={account.uid} value={account.uid}>
+                  {/* 未分配分组的号也在这里，标出来才不会让人以为"它归了某个组"。 */}
                   {account.nickname || account.uid}
+                  {account.channelId ? "" : "（待分配）"}
                 </SelectItem>
               ))}
             </SelectContent>
@@ -627,18 +602,16 @@ export const TaskChannelPage = () => {
           empty={
             <EmptyState
               icon={ListChecks}
-              title={accounts.length === 0 ? "该渠道还没有账号" : "今天没有任务"}
+              title={accounts.length === 0 ? "还没有该版本的账号" : "今天没有任务"}
               description={
                 accounts.length === 0
-                  ? "先添加账号，才能读取它的任务与每日动作。"
+                  ? "国内版 / 国际版的号都会显示在这里，包括还没分配分组的号。先添加一个账号。"
                   : "账号已就绪，但上游当前没有返回待办任务。"
               }
               action={
                 accounts.length === 0 ? (
                   <Button size="sm" asChild>
-                    <Link to={`/channels/${encodeURIComponent(targetChannelId)}`}>
-                      去添加账号
-                    </Link>
+                    <Link to="/accounts">去添加账号</Link>
                   </Button>
                 ) : undefined
               }

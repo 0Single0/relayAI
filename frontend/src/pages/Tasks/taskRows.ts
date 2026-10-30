@@ -4,6 +4,8 @@ import type { DailyAction, TaskAccountLive, TaskInfo } from "@/api/types";
 export type TaskRowAccountState = {
   uid: string;
   nickname: string;
+  /** 该账号所属分组；空串 = 待分配（未归组）。 */
+  channelId: string;
   /** 该账号下这条任务的状态。 */
   status: TaskInfo["status"];
   progress: string;
@@ -51,7 +53,7 @@ export const buildTaskRows = (accounts: TaskAccountLive[]): TaskRow[] => {
     code: string,
     name: string,
     account: TaskAccountLive,
-    detail: Omit<TaskRowAccountState, "uid" | "nickname" | "enabled" | "credentialOk">,
+    detail: Omit<TaskRowAccountState, "uid" | "nickname" | "channelId" | "enabled" | "credentialOk">,
     done: boolean,
   ) => {
     const key = `${kind}:${code}`;
@@ -80,6 +82,7 @@ export const buildTaskRows = (accounts: TaskAccountLive[]): TaskRow[] => {
     row.accounts.push({
       uid: account.uid,
       nickname: account.nickname,
+      channelId: account.channelId,
       enabled: account.enabled,
       credentialOk: account.credentialOk,
       ...detail,

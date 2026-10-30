@@ -59,6 +59,8 @@ import { cn } from "@/lib/utils";
 import { getRequestErrorMessage } from "@/utils/request";
 
 const ALL = "__all__";
+/** 筛出"还没分配分组"的号。与真实分组 id 不可能重名（分组 id 不以双下划线开头）。 */
+const UNASSIGNED = "__unassigned__";
 
 /**
  * 账号列表。
@@ -220,7 +222,15 @@ export const AccountsPage = () => {
   const filtered = useMemo(() => {
     const trimmed = keyword.trim().toLowerCase();
     return accounts.filter((account) => {
-      if (channelFilter !== ALL && account.channelId !== channelFilter) {
+      /*
+        「待分配」也是一个可筛的分组。
+        没有它，用户想看"哪些号还没归组"只能一页页翻、靠肉眼找空单元格。
+      */
+      if (channelFilter === UNASSIGNED) {
+        if (account.channelId) {
+          return false;
+        }
+      } else if (channelFilter !== ALL && account.channelId !== channelFilter) {
         return false;
       }
       if (!trimmed) {
@@ -417,11 +427,20 @@ export const AccountsPage = () => {
         key: "channel",
         header: "分组",
         width: "124px",
-        render: (account) => (
-          <span className="block truncate text-xs text-muted-foreground">
-            {account.channelName || account.channelId}
-          </span>
-        ),
+        /*
+          未分配分组显示成「待分配」，而不是空白。
+
+          空白会被读成"这一列没数据/加载失败"；而"待分配"是一个**真实状态**：
+          号已经建好、凭据可用，只是还没归到任何计价桶里，因此不参与对外调度。
+        */
+        render: (account) =>
+          account.channelId ? (
+            <span className="block truncate text-xs text-muted-foreground">
+              {account.channelName || account.channelId}
+            </span>
+          ) : (
+            <StatusBadge tone="warning" label="待分配" dot={false} />
+          ),
       },
       {
         key: "quota",
@@ -606,6 +625,8 @@ export const AccountsPage = () => {
             </SelectTrigger>
             <SelectContent>
               <SelectItem value={ALL}>全部分组</SelectItem>
+              {/* 待分配：账号是独立实体，允许先建号、之后再把号归到某个分组。 */}
+              <SelectItem value={UNASSIGNED}>待分配（未归组）</SelectItem>
               {channels.map((channel) => (
                 <SelectItem key={channel.id} value={channel.id}>
                   {channel.name}

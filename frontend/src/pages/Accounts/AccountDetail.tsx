@@ -360,7 +360,13 @@ export const AccountDetailPage = () => {
       </PageSection>
 
       <Button variant="outline" size="sm" asChild className="self-start">
-        <Link to={`/tasks/${encodeURIComponent(account.channelId)}?account=${encodeURIComponent(account.uid)}`}>
+        {/*
+          任务页按**版本**取号，不按分组 —— 未分配分组的号也能点进来。
+          之前直接用 `account.channelId`，待分配的号会拼出一个空路径 `/tasks/`。
+        */}
+        <Link
+          to={`/tasks/${account.options?.realm === "intl" ? "intl" : "cn"}?account=${encodeURIComponent(account.uid)}`}
+        >
           <ListChecks aria-hidden="true" />
           查看该账号的任务
         </Link>

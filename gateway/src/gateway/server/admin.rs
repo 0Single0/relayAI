@@ -22,9 +22,9 @@ use serde_json::{json, Value};
 
 use crate::gateway::{
     channels::LoginPoll,
-    core::{dispatch, refresh},
+    core::{dispatch, pool::PoolAccount, refresh},
     errors::GatewayError,
-    state::SharedGateway,
+    state::{GatewayState, SharedGateway},
     timeutil::now_ms,
 };
 
@@ -60,6 +60,8 @@ pub fn router(state: SharedGateway, token: String) -> Router<SharedGateway> {
         .route("/internal/channels/{id}/login/poll", post(login_poll))
         .route("/internal/channels/{id}/login/complete", post(login_complete))
         .route("/internal/tasks/channels/{id}/live", get(task_live))
+        // 版本视图：任务页按 `cn` / `intl` 看号，不按分组 —— 未分配分组的号也要出现。
+        .route("/internal/tasks/realms/{realm}/live", get(task_live_realm))
         .route("/internal/tasks/run", post(task_run))
         .route("/internal/tasks/cancel", post(task_cancel))
         .route("/internal/tasks/progress", get(task_progress))
@@ -975,33 +977,134 @@ async fn persist_login(
 /// 这是 **N 次上游请求**（每账号一次 tasks + 一次 daily）。账号多时会慢，
 /// 所以并发限 3、总超时 15s，超时的账号返回错误而不是让整个页面挂掉。
 async fn task_live(State(state): State<SharedGateway>, Path(id): Path<String>) -> Response {
-    let Some(adapter) = state.adapter_for_channel_async(&id).await else {
-        return (StatusCode::NOT_FOUND, Json(json!({ "error": "渠道不存在" }))).into_response();
-    };
-
     let accounts = state.pool.by_channel(&id);
+    if accounts.is_empty() && state.adapter_for_channel_async(&id).await.is_none() {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": "渠道不存在" })),
+        )
+            .into_response();
+    }
+
+    let result = snapshot_accounts(&state, accounts).await;
+
+    Json(json!({
+        "channelId": id,
+        "fetchedAt": now_ms(),
+        "accounts": result,
+    }))
+    .into_response()
+}
+
+/// 按**版本**取任务快照：`cn` / `intl`。
+///
+/// 为什么需要它（而不是只按分组取）：任务页的 URL 参数是**版本**，
+/// 页面回答的是"这个版本今天有哪些任务、哪些号还没做"。
+/// 只按一个分组取会有两个直接后果：
+///   · 没分配分组的号（`channel_id IS NULL`）永远查不到 —— 它们不属于任何分组；
+///   · 同一版本下建了两个分组时，只有一个分组的号会显示出来。
+///
+/// 版本是账号属性（`options.realm`），不是分组属性，所以这里直接扫全池。
+async fn task_live_realm(
+    State(state): State<SharedGateway>,
+    Path(realm): Path<String>,
+) -> Response {
+    let realm = if realm.eq_ignore_ascii_case("intl") {
+        "intl"
+    } else {
+        "cn"
+    };
+    let accounts: Vec<_> = state
+        .pool
+        .accounts()
+        .into_iter()
+        .filter(|account| account.platform == "workbuddy" && account_realm(account) == realm)
+        .collect();
+
+    let result = snapshot_accounts(&state, accounts).await;
+
+    Json(json!({
+        "realm": realm,
+        "fetchedAt": now_ms(),
+        "accounts": result,
+    }))
+    .into_response()
+}
+
+/// WorkBuddy 账号的版本；缺省 `cn`（与适配器里的兜底一致）。
+fn account_realm(account: &PoolAccount) -> &str {
+    account
+        .options
+        .get("realm")
+        .and_then(Value::as_str)
+        .map(|value| {
+            if value.eq_ignore_ascii_case("intl")
+                || value.eq_ignore_ascii_case("international")
+                || value.eq_ignore_ascii_case("global")
+            {
+                "intl"
+            } else {
+                "cn"
+            }
+        })
+        .unwrap_or("cn")
+}
+
+/// 给一批账号逐个拉任务 / 每日动作 / 成长快照。
+///
+/// **适配器按账号的平台取**：一个分组下本来就可能混平台，
+/// 版本视图更是跨分组，用分组选适配器会选到别人的平台。
+async fn snapshot_accounts(state: &GatewayState, accounts: Vec<Arc<PoolAccount>>) -> Vec<Value> {
     let mut result = Vec::with_capacity(accounts.len());
 
     for account in accounts {
-        let snapshot = account.snapshot();
-        let running = state.task_progress(&id, &account.key.uid)["running"]
+        // 执行进度按「该账号实际所在分组 + uid」记（未分配分组的账号分组为空串）。
+        let channel_id = account.key.channel_id.clone();
+        let running = state.task_progress(&channel_id, &account.key.uid)["running"]
             .as_bool()
             .unwrap_or(false);
+        let base = json!({
+            "channelId": channel_id,
+            "uid": account.key.uid,
+            "nickname": account.nickname,
+        });
 
         if !account.enabled {
-            result.push(json!({
-                "uid": account.key.uid,
-                "nickname": account.nickname,
-                "enabled": false,
-                "credentialOk": account.credentials().is_present(),
-                "running": running,
-                "runId": null,
-                "error": null,
-                "tasks": [],
-                "daily": [],
-            }));
+            let mut value = base;
+            value["enabled"] = json!(false);
+            value["credentialOk"] = json!(account.credentials().is_present());
+            value["running"] = json!(running);
+            value["runId"] = Value::Null;
+            value["error"] = Value::Null;
+            value["tasks"] = json!([]);
+            value["daily"] = json!([]);
+            value["growth"] = Value::Null;
+            result.push(value);
             continue;
         }
+
+        let Some(adapter) = state.adapter_for(&account) else {
+            /*
+              账号没有平台（或平台未实现）：如实报错，不猜一个适配器去打上游。
+
+              之前这种情况会让整个接口 404「渠道不存在」，
+              而分组明明存在 —— 排查方向完全被带偏。
+            */
+            let mut value = base;
+            value["enabled"] = json!(true);
+            value["credentialOk"] = json!(account.credentials().is_present());
+            value["running"] = json!(running);
+            value["runId"] = Value::Null;
+            value["error"] = json!("该账号没有可用的平台适配器，请检查账号的平台配置");
+            value["tasks"] = json!([]);
+            value["daily"] = json!([]);
+            value["growth"] = Value::Null;
+            result.push(value);
+            continue;
+        };
+
+        let snapshot = account.snapshot();
+        let label = format!("{}/{}", account.key.channel_id, account.key.uid);
 
         let tasks = match tokio::time::timeout(
             std::time::Duration::from_secs(15),
@@ -1012,14 +1115,11 @@ async fn task_live(State(state): State<SharedGateway>, Path(id): Path<String>) -
             Ok(Ok(Some(list))) => list,
             Ok(Ok(None)) => Vec::new(),
             Ok(Err(error)) => {
-                eprintln!(
-                    "[gateway] 任务清单拉取失败 {}/{}：{}",
-                    id, account.key.uid, error.message
-                );
+                eprintln!("[gateway] 任务清单拉取失败 {label}：{}", error.message);
                 Vec::new()
             }
             Err(_) => {
-                eprintln!("[gateway] 任务清单拉取超时 {}/{}", id, account.key.uid);
+                eprintln!("[gateway] 任务清单拉取超时 {label}");
                 Vec::new()
             }
         };
@@ -1033,14 +1133,11 @@ async fn task_live(State(state): State<SharedGateway>, Path(id): Path<String>) -
             Ok(Ok(Some(list))) => list,
             Ok(Ok(None)) => Vec::new(),
             Ok(Err(error)) => {
-                eprintln!(
-                    "[gateway] 每日动作拉取失败 {}/{}：{}",
-                    id, account.key.uid, error.message
-                );
+                eprintln!("[gateway] 每日动作拉取失败 {label}：{}", error.message);
                 Vec::new()
             }
             Err(_) => {
-                eprintln!("[gateway] 每日动作拉取超时 {}/{}", id, account.key.uid);
+                eprintln!("[gateway] 每日动作拉取超时 {label}");
                 Vec::new()
             }
         };
@@ -1051,24 +1148,17 @@ async fn task_live(State(state): State<SharedGateway>, Path(id): Path<String>) -
           单独一块而不是混进 daily：
             · daily 是"今天做没做"的动作，这些是**长期状态**（连登天数、剩余次数）；
             · 界面上它们属于"福利概览"，与任务列表并排，不是同一层信息。
-        */
-        let growth = tokio::time::timeout(
-            std::time::Duration::from_secs(15),
-            crate::gateway::channels::workbuddy::growth_snapshot(&state.client, &snapshot),
-        )
-        .await;
 
-        result.push(json!({
-            "uid": account.key.uid,
-            "nickname": account.nickname,
-            "enabled": true,
-            "credentialOk": account.credentials().is_present(),
-            "running": running,
-            "runId": null,
-            "error": null,
-            "tasks": tasks,
-            "daily": daily,
-            "growth": match growth {
+          只有 WorkBuddy 有这套成长体系：别的平台打这个接口没有意义，
+          直接给 null（界面据此显示"不可用"，而不是一组 0）。
+        */
+        let growth = if account.platform == "workbuddy" {
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(15),
+                crate::gateway::channels::workbuddy::growth_snapshot(&state.client, &snapshot),
+            )
+            .await
+            {
                 Ok(value) => json!({
                     "energy": value.energy,
                     "energyError": value.energy_error,
@@ -1080,18 +1170,26 @@ async fn task_live(State(state): State<SharedGateway>, Path(id): Path<String>) -
                     "tier28d": value.tier_28d,
                     "lotteryChances": value.lottery_chances,
                 }),
-                // 超时或异常：整块为空，界面显示"不可用"而不是一堆 0。
-                Err(_) => serde_json::Value::Null,
-            },
-        }));
+                // 超时：整块为空，界面显示"不可用"而不是一堆 0。
+                Err(_) => Value::Null,
+            }
+        } else {
+            Value::Null
+        };
+
+        let mut value = base;
+        value["enabled"] = json!(true);
+        value["credentialOk"] = json!(account.credentials().is_present());
+        value["running"] = json!(running);
+        value["runId"] = Value::Null;
+        value["error"] = Value::Null;
+        value["tasks"] = json!(tasks);
+        value["daily"] = json!(daily);
+        value["growth"] = growth;
+        result.push(value);
     }
 
-    Json(json!({
-        "channelId": id,
-        "fetchedAt": now_ms(),
-        "accounts": result,
-    }))
-    .into_response()
+    result
 }
 
 #[derive(Debug, Deserialize)]
@@ -1114,12 +1212,21 @@ struct TaskRunBody {
 
 /// 触发一次任务执行（后台跑，进度通过 `/internal/tasks/progress` 读）。
 async fn task_run(State(state): State<SharedGateway>, Json(body): Json<TaskRunBody>) -> Response {
-    let Some(adapter) = state.adapter_for_channel(&body.channel_id) else {
-        return (StatusCode::NOT_FOUND, Json(json!({ "error": "渠道不存在" }))).into_response();
-    };
+    /*
+      先按账号定位、再用账号的平台取适配器。
 
+      顺序不能反：平台在账号上，未分配分组的账号 `channel_id` 是空串，
+      按分组取适配器会直接「渠道不存在」—— 而这些号本来就能跑任务。
+    */
     let Some(account) = state.account(&body.channel_id, &body.uid) else {
         return (StatusCode::NOT_FOUND, Json(json!({ "error": "账号不存在" }))).into_response();
+    };
+    let Some(adapter) = state.adapter_for(&account) else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": "该账号没有可用的平台适配器" })),
+        )
+            .into_response();
     };
 
     if !state.begin_task_run(&body.channel_id, &body.uid) {
@@ -1452,5 +1559,33 @@ async fn state_reload(State(state): State<SharedGateway>) -> Response {
         }))
         .into_response(),
         Err(error) => internal_error(error),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn account_with(options: Value) -> PoolAccount {
+        let mut account = PoolAccount::new("", "u1");
+        account.platform = "workbuddy".into();
+        account.options = options;
+        account
+    }
+
+    /*
+      版本判定必须以**账号**的 options.realm 为准。
+
+      这条是"未分配分组的号也要出现在任务页"的前提：版本是账号属性，
+      不是分组属性 —— 没分组的号同样有 realm，按版本扫全池才能把它查出来。
+    */
+    #[test]
+    fn realm_follows_the_account_and_defaults_to_cn() {
+        assert_eq!(account_realm(&account_with(json!({"realm": "intl"}))), "intl");
+        assert_eq!(account_realm(&account_with(json!({"realm": "INTL"}))), "intl");
+        assert_eq!(account_realm(&account_with(json!({"realm": "cn"}))), "cn");
+        // 没填 realm 的老数据按国内版处理（与适配器的兜底一致）。
+        assert_eq!(account_realm(&account_with(json!({}))), "cn");
+        assert_eq!(account_realm(&account_with(Value::Null)), "cn");
     }
 }

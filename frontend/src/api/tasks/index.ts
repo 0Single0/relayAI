@@ -12,6 +12,13 @@ import type {
 export const listTaskChannels = () =>
   APIRequest<TaskChannel[]>({ url: "/tasks/channels", method: "GET" });
 
+/**
+ * 任务快照。
+ *
+ * `channelId` 传**版本**（`cn` / `intl`）：后端按版本跨分组取号，
+ * 未分配分组的号也会包含在内。传具体分组 id 仍可用（兼容），
+ * 但只返回该分组下的号。
+ */
 export const getTaskChannelLive = (channelId: string, signal?: AbortSignal) =>
   APIRequest<TaskChannelLive>({
     url: `/tasks/channels/${encodeURIComponent(channelId)}/live`,
@@ -21,8 +28,13 @@ export const getTaskChannelLive = (channelId: string, signal?: AbortSignal) =>
   });
 
 export type StartRunPayload = {
-  channelId: string;
-  accountUids: string[];
+  /**
+   * 目标账号（UID + 各自所属分组）。
+   *
+   * 必须逐账号带分组：任务页按版本取号，同屏可能有多个分组、
+   * 也可能有还没分配分组的号（`channelId` 为空串）。
+   */
+  accounts: Array<{ uid: string; channelId: string }>;
   scope: TaskScope;
   /**
    * 只执行这些任务码；为空则按 `scope` 跑整批。
