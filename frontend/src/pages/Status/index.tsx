@@ -1,10 +1,10 @@
 import { Activity, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import { listChannelHealth } from "@/api/channels";
 import { getGatewayStatus } from "@/api/system";
 import type { ChannelHealth, GatewayStatus } from "@/api/types";
 import { ChannelHealthCard } from "@/components/common/ChannelHealthCard";
-import { ProbeModelDialog } from "@/pages/Status/components/ProbeModelDialog";
 import { EmptyState } from "@/components/common/EmptyState";
 import { ErrorState } from "@/components/common/ErrorState";
 import { MyBox } from "@/components/common/MyBox";
@@ -31,8 +31,6 @@ export const StatusPage = () => {
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [days, setDays] = useState<number>(7);
   const [reloadKey, setReloadKey] = useState(0);
-  /** 正在编辑探活模型的分组；null = 对话框关闭。 */
-  const [probeTarget, setProbeTarget] = useState<ChannelHealth | null>(null);
 
   const load = useCallback(async () => {
     setIsLoading(true);
@@ -145,18 +143,18 @@ export const StatusPage = () => {
         {health.length === 0 ? (
           <EmptyState
             icon={Activity}
-            title="还没有可观测的分组"
-            description="先在「分组管理」里新增分组并添加账号，这里会按分组展示可用性。"
+            title="还没有展示中的分组"
+            description="「分组状态」只显示在分组管理里开启了展示的分组。去「分组管理 → 编辑」打开「分组状态」，并选好探活模型。"
+            action={
+              <Button size="sm" asChild>
+                <Link to="/channels">去分组管理</Link>
+              </Button>
+            }
           />
         ) : (
           <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
             {health.map((channel) => (
-              <ChannelHealthCard
-                key={channel.id}
-                channel={channel}
-                days={days}
-                onEditProbeModel={setProbeTarget}
-              />
+              <ChannelHealthCard key={channel.id} channel={channel} days={days} />
             ))}
           </div>
         )}
@@ -174,23 +172,13 @@ export const StatusPage = () => {
         </PageSection>
       ) : null}
 
-      {/* 探活模型设置：管理员改完立即生效，下一轮探活就用新模型。 */}
-      <ProbeModelDialog
-        channel={
-          probeTarget
-            ? {
-                id: probeTarget.id,
-                name: probeTarget.name,
-                probeModel: probeTarget.probeModel,
-              }
-            : null
-        }
-        onClose={() => setProbeTarget(null)}
-        onSaved={() => {
-          setProbeTarget(null);
-          setReloadKey((value) => value + 1);
-        }}
-      />
+      {/*
+        这里**不再有**探活模型设置入口。
+
+        它已经挪到「分组管理 → 编辑分组」：展示开关和探活模型是同一块设置，
+        而藏起来的分组在这张页面根本没有卡片 —— 入口放在这里的话，
+        一旦关闭展示就再也改不回来了。
+      */}
     </div>
   );
 };

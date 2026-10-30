@@ -51,7 +51,16 @@ type Channels struct {
 	// 为什么是列表：一个分组挂十几个模型，只探一个得不出"分组是否可用"。
 	// 空表示"探这个分组对外暴露的全部模型"。
 	ProbeModels TextArray `gorm:"column:probe_models;type:text[]" json:"probeModels"`
-	CreatedAt  time.Time `gorm:"column:created_at;not null;default:now()" json:"createdAt"`
+	// StatusVisible 决定这个分组是否出现在「分组状态」页。
+	//
+	// **默认 false（不展示）**：那张页面是给人看的门面，
+	// 内部用来调度的分组不该自动出现在上面。要展示哪个分组是明确的选择，
+	// 不是"建了分组就自动公开"。
+	//
+	// 只影响展示，不影响探活：探活由 `probe_model` / `probe_models` 决定，
+	// 两者互不牵连 —— 否则"临时把某个分组藏起来"会顺带清空它的探活历史。
+	StatusVisible bool      `gorm:"column:status_visible;not null;default:false" json:"statusVisible"`
+	CreatedAt     time.Time `gorm:"column:created_at;not null;default:now()" json:"createdAt"`
 	UpdatedAt  time.Time `gorm:"column:updated_at;not null;default:now()" json:"updatedAt"`
 }
 

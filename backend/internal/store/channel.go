@@ -69,6 +69,15 @@ type Channel struct {
 	ModelAllow []string `json:"modelAllow"`
 	// ProbeModel 是探活使用的对外模型名；空 = 由网关自动挑。
 	ProbeModel string `json:"probeModel"`
+	// ProbeModels 是本分组要探活的全部模型（`probe_models` ∪ `probe_model`）。
+	//
+	// 与 `ProbeModel` 并存：单选字段是旧口径，多选才是定时探活真正读的列表。
+	// 界面两个都要，否则「设了探活模型却没生效」这种问题又会出现。
+	ProbeModels []string `json:"probeModels"`
+	// StatusVisible 表示这个分组是否出现在「分组状态」页。
+	//
+	// 默认 false：分组建出来是给调度用的，公开状态是额外动作。
+	StatusVisible bool `json:"statusVisible"`
 }
 
 // ChannelCaps 是缓存的运营能力。
@@ -101,6 +110,8 @@ type channelRow struct {
 	Platforms        models.TextArray `gorm:"column:platforms"`
 	ModelAllow       models.TextArray `gorm:"column:model_allow"`
 	ProbeModel       string           `gorm:"column:probe_model"`
+	ProbeModels      models.TextArray `gorm:"column:probe_models"`
+	StatusVisible    bool             `gorm:"column:status_visible"`
 }
 
 // ListChannels 返回全部渠道，含账号数与今日调用量。
@@ -121,7 +132,9 @@ func (s *Store) ListChannels(ctx context.Context) ([]Channel, error) {
 		       COALESCE(cap.checkin, false) AS checkin,
 		       COALESCE(p.platforms, ARRAY[]::text[]) AS platforms,
 		       COALESCE(c.model_allow, ARRAY[]::text[]) AS model_allow,
-		       COALESCE(c.probe_model, '') AS probe_model
+		       COALESCE(c.probe_model, '') AS probe_model,
+		       COALESCE(c.probe_models, ARRAY[]::text[]) AS probe_models,
+		       COALESCE(c.status_visible, false) AS status_visible
 		FROM channels c
 		LEFT JOIN (
 			SELECT channel_id, count(*) AS cnt FROM accounts GROUP BY channel_id
@@ -163,6 +176,8 @@ func (s *Store) ListChannels(ctx context.Context) ([]Channel, error) {
 			Platforms:        orEmptyText(row.Platforms),
 			ModelAllow:       orEmptyText(row.ModelAllow),
 			ProbeModel:       row.ProbeModel,
+			ProbeModels:      probeModelUnion(row.ProbeModels, row.ProbeModel),
+			StatusVisible:    row.StatusVisible,
 		}
 		// Options 以 json.RawMessage 对外，内部扫成 []byte 再转。
 		if len(row.Options) > 0 {
@@ -212,6 +227,8 @@ type ChannelInput struct {
 	//
 	// nil = 不改；空数组 = 清空（回到"探全部"）。
 	ProbeModels *[]string `json:"probeModels"`
+	// StatusVisible 决定这个分组是否出现在「分组状态」页；nil = 不改。
+	StatusVisible *bool `json:"statusVisible"`
 }
 
 // CreateChannel 新建渠道。
@@ -256,6 +273,9 @@ func (s *Store) CreateChannel(ctx context.Context, input ChannelInput) (*Channel
 		// nil 存 NULL（= 不限制）；空数组也当 NULL —— 两者语义相同，
 		// 存成空数组会让"未配置"和"配置了空"出现两种表示。
 		ModelAllow: models.TextArray(emptyToNil(input.ModelAllow)),
+		// 新建的分组**默认不展示**：分组是调度用的计价桶，
+		// "公开状态"是额外动作，不该因为建了分组就自动发生。
+		StatusVisible: input.StatusVisible != nil && *input.StatusVisible,
 	}
 
 	// 渠道 + 能力缓存必须一起成功：只建渠道不建能力，
@@ -332,6 +352,10 @@ func (s *Store) UpdateChannel(ctx context.Context, id string, input ChannelInput
 	// nil = 不改；空数组 = 清空（回到"探全部"）。
 	if input.ProbeModels != nil {
 		updates["probe_models"] = models.TextArray(emptyToNil(*input.ProbeModels))
+	}
+	// nil = 不改；false = 从「分组状态」页撤下（探活历史保留）。
+	if input.StatusVisible != nil {
+		updates["status_visible"] = *input.StatusVisible
 	}
 
 	if len(updates) == 0 {

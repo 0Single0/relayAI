@@ -47,6 +47,22 @@ export type Channel = {
    * 正常情况下仅包含分组绑定的平台；保留数组以展示已有账号的实际平台。
    */
   platforms: string[];
+  /**
+   * 探活使用的对外模型名；空 = 由网关按「免费优先」自动挑。
+   *
+   * 只在「分组状态」展示时才用得上 —— 那页是探活的可视化，
+   * 模型设置也放在分组管理里，避免同一个开关散落在两个页面。
+   */
+  probeModel: string;
+  /** 本轮要探活的全部模型（`probe_model` 与 `probe_models` 的并集）。 */
+  probeModels: string[];
+  /**
+   * 是否在「分组状态」页展示这个分组。
+   *
+   * **默认 false**：分组是调度用的计价桶，公开状态是额外动作。
+   * 想只展示国内版、把国际版藏起来，就是把它保持关闭。
+   */
+  statusVisible: boolean;
 };
 
 export type Account = {

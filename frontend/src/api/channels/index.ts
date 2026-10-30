@@ -36,6 +36,12 @@ export type ChannelPayload = {
    * 与 `probeModel` 一起写：只改显示字段的话，探活仍按旧列表跑。
    */
   probeModels?: string[];
+  /**
+   * 是否在「分组状态」页展示这个分组。
+   *
+   * 不传 = 不改；新建时不传等于"不展示"（默认值）。
+   */
+  statusVisible?: boolean;
 };
 
 export const createChannel = (payload: ChannelPayload) =>

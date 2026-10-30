@@ -47,6 +47,13 @@ func registerChannels(mux *http.ServeMux, ctx *svc.ServiceContext) {
 			httpx.Fail(w, http.StatusBadRequest, "请先为分组添加账号，再配置对外模型")
 			return
 		}
+		// 探活模型必须是这个分组**真实提供**的模型 —— 新建时还没有账号，
+		// 也就没有任何模型可探，所以一律拒绝。
+		// 允许它落库只会得到"每轮探活都失败"的配置，排查方向还被带偏。
+		if input.ProbeModels != nil && len(*input.ProbeModels) > 0 {
+			httpx.Fail(w, http.StatusBadRequest, "请先为分组添加账号，再设置探活模型")
+			return
+		}
 
 		channel, err := ctx.Store.CreateChannel(r.Context(), input)
 		if err != nil {
@@ -80,6 +87,33 @@ func registerChannels(mux *http.ServeMux, ctx *svc.ServiceContext) {
 			for _, model := range input.ModelAllow {
 				if !supported[model] {
 					httpx.Fail(w, http.StatusBadRequest, "对外模型必须由本分组的已启用账号支持："+model)
+					return
+				}
+			}
+		}
+		/*
+		  探活模型同样要校验：只能选这个分组真的对外提供的模型。
+
+		  为什么必须拦：探活会真实消耗上游额度。填一个分组没有的模型，
+		  每轮探活都会失败 —— 那种失败是**配置错误**，不是账号故障，
+		  却会和真故障混在同一张卡片上，让人去查根本没问题的账号。
+		*/
+		if input.ProbeModels != nil && len(*input.ProbeModels) > 0 {
+			models, err := ctx.Gateway.GetChannelModels(r.Context(), r.PathValue("id"))
+			if err != nil {
+				httpx.FailError(w, r, err)
+				return
+			}
+			supported := map[string]bool{}
+			for _, model := range models {
+				supported[model.ID] = true
+			}
+			for _, name := range *input.ProbeModels {
+				if name == "" {
+					continue
+				}
+				if !supported[name] {
+					httpx.Fail(w, http.StatusBadRequest, "探活模型必须由本分组提供："+name)
 					return
 				}
 			}

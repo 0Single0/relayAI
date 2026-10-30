@@ -19,6 +19,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
+import { ChannelStatusSettings, type StatusSettingsValue } from "@/pages/Channels/components/ChannelStatusSettings";
 import { cn } from "@/lib/utils";
 import { getRequestErrorMessage } from "@/utils/request";
 
@@ -49,8 +50,16 @@ type FormState = {
   adapter: Channel["adapter"];
   /** WorkBuddy 专用：国内版 / 国际版。两者的上游域名与任务完全不同。 */
   realm: "cn" | "intl";
+  /** 「分组状态」的展示开关与探活模型。 */
+  status: StatusSettingsValue;
 };
 
+/**
+ * 新建分组的初始状态。
+ *
+ * `status.visible` 默认 **false**：分组是调度用的计价桶，
+ * 出现在「分组状态」页是额外动作，不该因为建了分组就自动公开。
+ */
 const emptyForm: FormState = {
   id: "",
   name: "",
@@ -62,6 +71,7 @@ const emptyForm: FormState = {
   rateLimitQps: "",
   adapter: "workbuddy",
   realm: "cn",
+  status: { visible: false, probeModels: [] },
 };
 
 const fromChannel = (channel: Channel): FormState => ({
@@ -75,6 +85,10 @@ const fromChannel = (channel: Channel): FormState => ({
   rateLimitQps: channel.rateLimitQps === null ? "" : String(channel.rateLimitQps),
   adapter: channel.adapter,
   realm: (channel.options?.realm === "intl" ? "intl" : "cn") as "cn" | "intl",
+  status: {
+    visible: channel.statusVisible === true,
+    probeModels: channel.probeModels ?? (channel.probeModel ? [channel.probeModel] : []),
+  },
 });
 
 const inputClass = cn(
@@ -176,6 +190,12 @@ export const ChannelFormSheet = ({
     channelRatio: Number(form.channelRatio),
     concurrencyLimit: form.concurrencyLimit.trim() ? Number(form.concurrencyLimit) : null,
     rateLimitQps: form.rateLimitQps.trim() ? Number(form.rateLimitQps) : null,
+    // 展示开关与探活模型一起写：它们是同一块设置的两个面，
+    // 分开保存会让"开了展示但一轮都没探过"这种半配置状态留在库里。
+    statusVisible: form.status.visible,
+    probeModels: form.status.probeModels,
+    // 旧版单值字段跟着列表收敛，避免两处口径不一致。
+    probeModel: form.status.probeModels[0] ?? "",
   });
 
   const submit = async () => {
@@ -351,6 +371,22 @@ export const ChannelFormSheet = ({
             />
           </Field>
         </div>
+
+        {/*
+          「分组状态」的展示开关与探活模型。
+
+          放在表单里而不是留在状态页：那是"分组的一个属性"（要不要公开、
+          用哪个模型证明可用），和倍率、启停属于同一层。状态页本身只负责
+          呈现，藏起来的分组在那里连入口都没有，设置就永远改不回来。
+        */}
+        <ChannelStatusSettings
+          // 新建时还不存在这个分组，也就没有"它对外提供的模型"。
+          // 传空串让这块只显示说明，不去拉一份必然为空的目录。
+          channelId={isEdit ? channel.id : ""}
+          value={form.status}
+          disabled={pending}
+          onChange={(next) => update("status", next)}
+        />
 
         {submitError ? <ErrorState title="保存失败" message={submitError} /> : null}
 

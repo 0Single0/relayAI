@@ -121,6 +121,11 @@ func (s *Store) ListChannelHealth(ctx context.Context, from time.Time) ([]Channe
 // ProbeModels 是 `probe_models` 与 `probe_model` 的并集（与调度器的选取口径
 // `ProbeTargets` 完全一致）；ProbeModel 取其中第一个，供卡片上那一行文字用。
 // 两边口径必须一致，否则界面写的和定时探活实际探的是两回事。
+//
+// **只返回 `status_visible` 为真的分组**：这张页面是给人看的状态板，
+// 展示哪些分组是管理员的明确选择（默认一个都不展示）。
+// 过滤放在 SQL 里而不是 handler：探活统计的三条附加查询都基于这份列表，
+// 在上面做过滤就等于只查该展示的分组，白跑的聚合能省掉。
 func (s *Store) listChannelBase(ctx context.Context) ([]ChannelHealth, error) {
 	const query = `
 		SELECT c.id, c.name, c.adapter, c.enabled, COALESCE(a.cnt, 0),
@@ -136,6 +141,7 @@ func (s *Store) listChannelBase(ctx context.Context) ([]ChannelHealth, error) {
 		LEFT JOIN (
 			SELECT channel_id, count(*) AS cnt FROM accounts GROUP BY channel_id
 		) a ON a.channel_id = c.id
+		WHERE COALESCE(c.status_visible, false)
 		ORDER BY c.priority DESC, c.id`
 
 	rows, err := s.db.WithContext(ctx).Raw(query).Rows()

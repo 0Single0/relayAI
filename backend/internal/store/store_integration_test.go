@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"testing"
+	"time"
 
 	"relayai/backend/internal/database"
 	"relayai/backend/internal/store"
@@ -219,5 +220,98 @@ func TestDeleteChannelKeepsAccountsAsUnassigned(t *testing.T) {
 	}
 	if !kept.Enabled {
 		t.Error("删分组不该顺手停用账号")
+	}
+}
+
+/*
+「分组状态」只展示显式开启的分组。
+
+用户要的是：「只想展示国内版，国际版不给用户看」。所以默认**不展示** ——
+分组建出来是给调度用的，公开状态是额外动作，不能因为建了分组就自动发生。
+
+这个用例同时守住两件容易混在一起的事：
+  · 展示开关只影响展示，不会顺手清掉探活模型；
+  · 探活模型列表是 `probe_model` 与 `probe_models` 的并集（与调度口径一致）。
+*/
+func TestChannelStatusVisibilityDefaultsOff(t *testing.T) {
+	s, _ := testDB(t)
+	ctx := context.Background()
+
+	enabled := true
+	create := func(id string) store.Channel {
+		t.Helper()
+		channel, err := s.CreateChannel(ctx, store.ChannelInput{
+			ID:      id,
+			Name:    id,
+			Adapter: "workbuddy",
+			Enabled: &enabled,
+			Options: []byte(`{"realm":"intl"}`),
+		})
+		if err != nil {
+			t.Fatalf("新建分组失败: %v", err)
+		}
+		return *channel
+	}
+
+	// 1) 新建即隐藏。
+	if channel := create("wb-intl-hidden"); channel.StatusVisible {
+		t.Error("新建分组默认不该出现在「分组状态」页")
+	}
+
+	// 2) 开启展示 + 设置探活模型。
+	visible := true
+	probeModels := []string{"glm-4.6", "deepseek-v4.1-flash"}
+	probe := ""
+	updated, err := s.UpdateChannel(ctx, "wb-intl-hidden", store.ChannelInput{
+		StatusVisible: &visible,
+		ProbeModels:   &probeModels,
+		ProbeModel:    &probe,
+	})
+	if err != nil {
+		t.Fatalf("更新分组失败: %v", err)
+	}
+	if !updated.StatusVisible {
+		t.Error("开启后应标记为展示")
+	}
+	if len(updated.ProbeModels) != len(probeModels) {
+		t.Fatalf("探活模型应为 %v，得到 %v", probeModels, updated.ProbeModels)
+	}
+
+	// 3) 关键：关掉展示**不清空**探活模型。
+	hidden := false
+	closed, err := s.UpdateChannel(ctx, "wb-intl-hidden", store.ChannelInput{StatusVisible: &hidden})
+	if err != nil {
+		t.Fatalf("关闭展示失败: %v", err)
+	}
+	if closed.StatusVisible {
+		t.Error("关闭后应标记为不展示")
+	}
+	if len(closed.ProbeModels) != len(probeModels) {
+		t.Errorf("关闭展示不该清空探活模型，期望 %v，得到 %v", probeModels, closed.ProbeModels)
+	}
+
+	// 4) 状态页只列出开启展示的分组。
+	create("wb-cn-shown")
+	shown, err := s.UpdateChannel(ctx, "wb-cn-shown", store.ChannelInput{StatusVisible: &visible})
+	if err != nil {
+		t.Fatalf("开启展示失败: %v", err)
+	}
+	if !shown.StatusVisible {
+		t.Fatal("国内版应已开启展示")
+	}
+
+	health, err := s.ListChannelHealth(ctx, time.Time{})
+	if err != nil {
+		t.Fatalf("读取分组健康度失败: %v", err)
+	}
+	ids := make(map[string]bool, len(health))
+	for _, item := range health {
+		ids[item.ID] = true
+	}
+	if !ids["wb-cn-shown"] {
+		t.Error("开启展示的分组应出现在分组状态页")
+	}
+	if ids["wb-intl-hidden"] {
+		t.Error("关闭展示的分组不该出现在分组状态页")
 	}
 }

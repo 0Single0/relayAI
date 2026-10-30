@@ -1,7 +1,7 @@
-import { Boxes, Eye, PencilLine, Plus, RefreshCw, Search, Trash2 } from "lucide-react";
+import { Activity, Boxes, Eye, PencilLine, Plus, RefreshCw, Search, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { listChannels } from "@/api/channels";
+import { listChannels, updateChannel } from "@/api/channels";
 import type { Channel } from "@/api/types";
 import { DataTable, type Column } from "@/components/common/DataTable";
 import { EmptyState } from "@/components/common/EmptyState";
@@ -11,6 +11,8 @@ import { Pagination } from "@/components/common/Pagination";
 import { RowActions } from "@/components/common/RowActions";
 import { StatusBadge } from "@/components/common/StatusBadge";
 import { Button } from "@/components/ui/button";
+import { Switch } from "@/components/ui/switch";
+import { toast } from "@/components/common/Toast/store";
 import { deleteChannel } from "@/api/channels";
 import {
   Dialog,
@@ -39,6 +41,8 @@ export const ChannelsPage = () => {
   const [deletePending, setDeletePending] = useState(false);
   const [deleteError, setDeleteError] = useState("");
   const [reloadKey, setReloadKey] = useState(0);
+  /** 正在切换状态的分组（`status-<id>`）；空串 = 没有在切。 */
+  const [busyId, setBusyId] = useState("");
   const navigate = useNavigate();
 
   const load = useCallback(async () => {
@@ -121,6 +125,36 @@ export const ChannelsPage = () => {
     setFormOpen(true);
   }, []);
 
+  /**
+   * 一键切换「分组状态」是否展示。
+   *
+   * 为什么给行内开关而不是只藏在编辑弹窗里：
+   *   用户的原话是"只想展示国内版，国际版不给用户看"——这是一个**频繁的开关**，
+   *   每次都要进弹窗改一遍太绕。列表里直接切，改完立刻生效。
+   *
+   * 只改 `statusVisible`，不动探活模型：把分组临时藏起来不该顺带清空探活配置，
+   * 否则再打开时又要重新选一遍模型。
+   */
+  const toggleStatusVisible = useCallback(async (channel: Channel, visible: boolean) => {
+    setBusyId(`status-${channel.id}`);
+    try {
+      await updateChannel(channel.id, { statusVisible: visible });
+      setChannels((prev) =>
+        prev.map((item) => (item.id === channel.id ? { ...item, statusVisible: visible } : item)),
+      );
+      toast.success(
+        visible ? "已加入分组状态" : "已从分组状态撤下",
+        visible ? `${channel.name} 现在会出现在「分组状态」页` : `${channel.name} 不再展示`,
+      );
+    } catch (requestError) {
+      toast.error("切换失败", getRequestErrorMessage(requestError));
+      // 失败时重新拉一次：本地状态可能与后端不一致，以库为准。
+      setReloadKey((value) => value + 1);
+    } finally {
+      setBusyId("");
+    }
+  }, []);
+
   const columns: Array<Column<Channel>> = [
     {
       key: "name",
@@ -198,13 +232,40 @@ export const ChannelsPage = () => {
     },
     {
       key: "status",
-      header: "状态",
+      header: "启用",
       width: "96px",
       render: (channel) => (
         <StatusBadge
           tone={channel.enabled ? "success" : "neutral"}
           label={channel.enabled ? "已启用" : "已停用"}
         />
+      ),
+    },
+    {
+      key: "statusVisible",
+      header: "分组状态",
+      width: "116px",
+      align: "center",
+      hideOnMobile: true,
+      /*
+        「分组状态」是否展示 = 这个分组要不要出现在那张状态板上。
+
+        默认关闭：分组是调度用的计价桶，公开状态是额外动作。
+        行内直接切，省得每次进弹窗；关掉时探活配置保留，
+        重新打开不用再选一遍模型。
+      */
+      render: (channel) => (
+        <label className="inline-flex items-center gap-1.5">
+          <Switch
+            checked={channel.statusVisible === true}
+            disabled={busyId === `status-${channel.id}`}
+            onCheckedChange={(checked) => void toggleStatusVisible(channel, checked)}
+            aria-label={`${channel.statusVisible ? "取消展示" : "展示"} ${channel.name} 的分组状态`}
+          />
+          <span className={cn("text-[11px]", channel.statusVisible ? "text-foreground" : "text-muted-foreground")}>
+            {channel.statusVisible ? "展示" : "隐藏"}
+          </span>
+        </label>
       ),
     },
     {
@@ -220,6 +281,12 @@ export const ChannelsPage = () => {
                 id: "edit",
               icon: PencilLine,
               tone: "primary",
+              onClick: () => openEdit(channel),
+            },
+            {
+              label: "分组状态",
+              id: "status-settings",
+              icon: Activity,
               onClick: () => openEdit(channel),
             },
             {

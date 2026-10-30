@@ -1,4 +1,4 @@
-import { Clock3, Gauge, PencilLine, Radio, Timer } from "lucide-react";
+import { Clock3, Gauge, Radio, Timer } from "lucide-react";
 import { Link } from "react-router-dom";
 import { StatusBadge, type StatusTone } from "@/components/common/StatusBadge";
 import { StatusStrip } from "@/components/common/StatusStrip";
@@ -99,12 +99,6 @@ export type ChannelHealthCardProps = {
   channel: ChannelHealth;
   /** 统计窗口天数，用于"探活可用性 · 7 天"这类文案。 */
   days: number;
-  /**
-   * 打开「设置探活模型」。
-   *
-   * 不传则不显示那个铅笔按钮 —— 只有管理员该看到它。
-   */
-  onEditProbeModel?: (channel: ChannelHealth) => void;
 };
 
 /**
@@ -115,12 +109,12 @@ export type ChannelHealthCardProps = {
  *
  * 全部数字都来自定时探活，与真实请求用量无关 —— 这一点必须在文案上说清，
  * 否则"999 次探活"会被读成"999 次调用"。
+ *
+ * **这里没有设置入口**（早先有个改探活模型的铅笔按钮）：展示开关与探活模型
+ * 都搬到了「分组管理 → 编辑分组」。它们服务同一个目的，而且藏起来的分组
+ * 在这张页面根本没有卡片 —— 入口留在这儿，一旦关闭展示就再也改不回来。
  */
-export const ChannelHealthCard = ({
-  channel,
-  days,
-  onEditProbeModel,
-}: ChannelHealthCardProps) => {
+export const ChannelHealthCard = ({ channel, days }: ChannelHealthCardProps) => {
   const health = healthOf(channel);
   /*
     模型列表优先用 probeModels；老后端只回 probeModel 时退化成单元素，
@@ -162,8 +156,10 @@ export const ChannelHealthCard = ({
           </p>
           {/*
             探活模型：让人知道"这个绿灯是用哪个模型测出来的"。
-            没指定时是网关自动挑（免费优先），显示成"自动"而不是留空 ——
-            留空会被读成"没有探活"。
+
+            空 = **真的没配**（不探活），必须说成"未配置"而不是"自动"：
+            早先这里写"自动（免费优先）"，但定时探活的口径是"没配就不探" ——
+            文案与行为反了，用户看着有值、其实一条探活都没跑。
           */}
           <p className="mt-1 flex items-start gap-1 text-[11px] text-muted-foreground">
             <Gauge className="mt-0.5 size-3 shrink-0" aria-hidden="true" />
@@ -176,22 +172,11 @@ export const ChannelHealthCard = ({
               title={
                 probeModels.length > 0
                   ? `每轮探 ${probeModels.length} 个模型：${probeModels.join("、")}`
-                  : "未指定：由网关按「免费优先」自动挑一个属于该分组的模型"
+                  : "未配置：这个分组不做定时探活（在「分组管理 → 编辑」里选）"
               }
             >
-              {probeModels.length > 0 ? probeModels.join("、") : "自动（免费优先）"}
+              {probeModels.length > 0 ? probeModels.join("、") : "未配置（不探活）"}
             </span>
-            {onEditProbeModel ? (
-              <button
-                type="button"
-                onClick={() => onEditProbeModel(channel)}
-                aria-label={`设置 ${channel.name} 的探活模型`}
-                title="更换探活模型"
-                className="ml-auto inline-flex shrink-0 cursor-pointer items-center rounded px-1 py-0.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:outline-none"
-              >
-                <PencilLine className="size-3" aria-hidden="true" />
-              </button>
-            ) : null}
           </p>
         </div>
         <StatusBadge tone={health.tone} label={health.label} />
@@ -247,7 +232,7 @@ export const ChannelHealthCard = ({
       ) : (
         <p className="rounded-md bg-muted/50 px-2 py-1.5 text-[11px] leading-4 text-muted-foreground">
           <Radio className="mr-1 inline size-3" aria-hidden="true" />
-          还没有探活记录：先给这个分组选一个探活模型，定时探活下一轮就会有数据。
+          还没有探活记录：在「分组管理 → 编辑」里选好探活模型，定时探活下一轮就会有数据。
         </p>
       )}
 
