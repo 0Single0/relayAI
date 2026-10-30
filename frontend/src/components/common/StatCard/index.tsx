@@ -124,8 +124,13 @@ export const StatCard = ({
         </div>
       </div>
 
+      {/*
+        曲线固定宽度但收窄到 14：一行四张卡时单卡只有约 230px，
+        原来的 20/24 会把左侧数值区压到 100px 以下，「平均缓存命中率」
+        这种 7 个字的标签和补充说明就只剩省略号了。
+      */}
       {spark && spark.length > 0 ? (
-        <div className="flex w-20 shrink-0 flex-col justify-center sm:w-24">
+        <div className="flex w-14 shrink-0 flex-col justify-center">
           <Sparkline
             values={spark}
             color={sparkColor[tone]}

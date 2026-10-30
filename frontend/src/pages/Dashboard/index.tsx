@@ -3,8 +3,10 @@ import {
   Activity,
   Coins,
   Database,
+  DatabaseZap,
   Gauge,
   RefreshCw,
+  Sigma,
   Wallet,
   Zap,
 } from "lucide-react";
@@ -137,6 +139,17 @@ export const DashboardPage = () => {
   const today = overview?.today ?? emptyTotals;
   const total = overview?.total ?? emptyTotals;
 
+  // 平均缓存命中率 = 命中缓存的输入 Token / 全部输入 Token（今日口径）。
+  // 用"按 Token 加权"而不是"每桶命中率的算术平均"：一次大请求和一次小请求
+  // 的命中率不该等权，算术平均会被大量小请求带偏。
+  // 没有任何输入 Token 时返回 null（"—"），而不是 0% —— 那会被读成"完全没命中"。
+  const cacheHitRate = useMemo(() => {
+    if (today.promptTokens <= 0) {
+      return null;
+    }
+    return (Math.min(today.cachedTokens, today.promptTokens) / today.promptTokens) * 100;
+  }, [today.cachedTokens, today.promptTokens]);
+
   // 补零成连续时间轴：后端只返回有数据的桶，直接画会把 4 个点等距摊满，
   // 看起来"中间的时间段消失了"。补 0 之后空白时段是真实信息。
   const trendRows = useMemo(
@@ -166,8 +179,10 @@ export const DashboardPage = () => {
     const requests = tail(hourRows).map((row) => row.requests);
     const tokens = tail(hourRows).map((row) => row.totalTokens);
     const ttft = tail(hourRows).map((row) => row.avgTtftMs ?? 0);
+    // 缓存命中率 = 命中缓存的输入 Token / 全部输入 Token。
+    // 没有输入的时段是 0（不是"100% 命中"），空桶一律给 0 才不会画出假峰值。
     const cacheRate = tail(hourRows).map((row) =>
-      row.requests > 0 ? row.successRate * 100 : 0,
+      row.promptTokens > 0 ? (row.cachedTokens / row.promptTokens) * 100 : 0,
     );
     return {
       requests,
@@ -339,15 +354,16 @@ export const DashboardPage = () => {
 
       <MyBox isLoading={isLoading && overview === null} text="正在加载统计数据...">
         {/*
-          指标卡的顺序按"用户最关心什么"排，不是按数据是否好算：
-          余额 → 今日消费 → 今日 Token → 累计 Token → 今日请求 → 首字延迟。
+          指标卡固定一行四张（宽屏共两行），顺序按"用户最关心什么"排：
+          第一行 = 钱 + 今天的量（余额 / 今日消费 / 今日 Token / 缓存命中率），
+          第二行 = 请求数与延迟（今日请求 / 总请求 / 累计 Token / 首字延迟）。
 
           余额排第一：这是唯一一个"再不动手就要停机"的数字。
-          原来的「缓存命中 / 累计成功率 / 累计请求」三张卡去掉了 ——
-          它们是好看但不可行动（看到了也不能做什么），
-          而首字延迟是"用户抱怨慢"时第一个要看的数，所以留着。
+          缓存命中率放在第一行末尾：它和「今日 Token」看的是同一批输入，
+          命中率越低，同样的对话越贵，两张卡挨着才能连起来读。
+          总请求数用累计口径，和「今日请求」上下相邻，方便对照"今天占了多少"。
         */}
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
           <StatCard
             label="账户余额"
             value={`¥${(user?.balance ?? 0).toFixed(2)}`}
@@ -374,12 +390,17 @@ export const DashboardPage = () => {
             trendLabel="24 小时"
           />
           <StatCard
-            label="累计 Token"
-            value={compactNumber(total.totalTokens)}
-            hint={`输入 ${compactNumber(total.promptTokens)} · 输出 ${compactNumber(total.completionTokens)}`}
-            icon={Database}
-            tone="violet"
-            spark={sparks.totalTokens}
+            label="平均缓存命中率"
+            value={cacheHitRate === null ? "—" : `${cacheHitRate.toFixed(1)}%`}
+            hint={
+              today.promptTokens > 0
+                ? `命中 ${compactNumber(today.cachedTokens)} / 输入 ${compactNumber(today.promptTokens)}`
+                : "今天还没有输入 Token"
+            }
+            icon={DatabaseZap}
+            tone="amber"
+            spark={sparks.cacheRate}
+            trendLabel="24 小时"
           />
           <StatCard
             label="今日请求"
@@ -389,6 +410,22 @@ export const DashboardPage = () => {
             tone="primary"
             spark={sparks.requests}
             trendLabel="24 小时"
+          />
+          <StatCard
+            label="总请求数"
+            value={formatCount(total.requests)}
+            hint={`累计成功率 ${(total.successRate * 100).toFixed(1)}%`}
+            icon={Sigma}
+            tone="primary"
+            spark={sparks.totalRequests}
+          />
+          <StatCard
+            label="累计 Token"
+            value={compactNumber(total.totalTokens)}
+            hint={`输入 ${compactNumber(total.promptTokens)} · 输出 ${compactNumber(total.completionTokens)}`}
+            icon={Database}
+            tone="violet"
+            spark={sparks.totalTokens}
           />
           <StatCard
             label="今日首字延迟"
