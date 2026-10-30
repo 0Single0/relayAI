@@ -525,7 +525,9 @@ type TaskAccountLive struct {
 // 与"真实的 0"区分开 —— 把"查不到"显示成 0 会误导。
 type GrowthSnapshot struct {
 	Energy         *int64  `json:"energy"`
+	EnergyError    *string `json:"energyError"`
 	StreakDays     *int64  `json:"streakDays"`
+	StreakError    *string `json:"streakError"`
 	MakeupCards    *int64  `json:"makeupCards"`
 	Tier7d         *string `json:"tier7d"`
 	Tier14d        *string `json:"tier14d"`

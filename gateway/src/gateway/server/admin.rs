@@ -1071,7 +1071,9 @@ async fn task_live(State(state): State<SharedGateway>, Path(id): Path<String>) -
             "growth": match growth {
                 Ok(value) => json!({
                     "energy": value.energy,
+                    "energyError": value.energy_error,
                     "streakDays": value.streak_days,
+                    "streakError": value.streak_error,
                     "makeupCards": value.makeup_cards,
                     "tier7d": value.tier_7d,
                     "tier14d": value.tier_14d,

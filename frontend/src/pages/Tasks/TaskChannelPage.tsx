@@ -1,5 +1,5 @@
 import { ListChecks, Play, RefreshCw } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import {
   cancelTaskRun,
@@ -90,14 +90,19 @@ export const TaskChannelPage = () => {
 
     没匹配到就留空 —— 页面会显示"没有账号，先去添加"，而不是假装能执行。
   */
-  const [targetChannelId, setTargetChannelId] = useState("");
+  const [targetChannel, setTargetChannel] = useState({ realm: "", id: "" });
+  const targetChannelId = targetChannel.realm === realm ? targetChannel.id : "";
 
   const [live, setLive] = useState<TaskChannelLive | null>(null);
   const [error, setError] = useState("");
   const [isLoading, setIsLoading] = useState(true);
   const [reloadKey, setReloadKey] = useState(0);
-  const [accountFilter, setAccountFilter] = useState(ALL_ACCOUNTS);
+  const [accountSelection, setAccountSelection] = useState({ realm: "", uid: ALL_ACCOUNTS });
+  const accountFilter = accountSelection.realm === realm ? accountSelection.uid : ALL_ACCOUNTS;
+  const setAccountFilter = useCallback((uid: string) => setAccountSelection({ realm, uid }), [realm]);
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const requestSequence = useRef(0);
+  const requestController = useRef<AbortController | null>(null);
   /*
     按版本找执行用的分组。
 
@@ -106,22 +111,29 @@ export const TaskChannelPage = () => {
     "先去添加账号"—— 比直接 404 更清楚。
   */
   useEffect(() => {
+    let active = true;
     void listTaskChannels()
       .then((response) => {
+        if (!active) return;
         const candidates = (response.data ?? []).filter((item) => {
           const itemRealm = item.realm === "intl" ? "intl" : "cn";
           return itemRealm === realm;
         });
         const withAccounts = candidates.find((item) => item.accountCount > 0);
-        setTargetChannelId((withAccounts ?? candidates[0])?.id ?? "");
+        setTargetChannel({ realm, id: (withAccounts ?? candidates[0])?.id ?? "" });
       })
       .catch(() => {
-        setTargetChannelId("");
+        if (active) setTargetChannel({ realm, id: "" });
       });
+    return () => { active = false; };
   }, [realm, reloadKey]);
 
 
   const load = useCallback(async () => {
+    const sequence = ++requestSequence.current;
+    requestController.current?.abort();
+    const controller = new AbortController();
+    requestController.current = controller;
     setIsLoading(true);
     try {
       if (!targetChannelId) {
@@ -136,20 +148,26 @@ export const TaskChannelPage = () => {
         setIsLoading(false);
         return;
       }
-      const response = await getTaskChannelLive(targetChannelId);
+      const response = await getTaskChannelLive(targetChannelId, controller.signal);
+      if (sequence !== requestSequence.current || controller.signal.aborted) return;
       setLive(response.data ?? null);
       setError("");
     } catch (requestError) {
+      if (sequence !== requestSequence.current || controller.signal.aborted) return;
       setError(getRequestErrorMessage(requestError));
       setLive(null);
     } finally {
-      setIsLoading(false);
+      if (sequence === requestSequence.current) setIsLoading(false);
     }
   }, [targetChannelId]);
 
   useEffect(() => {
     void load();
-  }, [load, reloadKey]);
+    const controller = requestController.current;
+    return () => {
+      controller?.abort();
+    };
+  }, [load, reloadKey, accountFilter]);
 
 
   const accounts = useMemo(() => live?.accounts ?? [], [live]);
@@ -579,20 +597,13 @@ export const TaskChannelPage = () => {
           hint="常见原因：该版本还没有可用账号，或账号凭据不可用。"
         />
       ) : null}
-      {/*
-        顶部状态条：成长数据 + 每日动作状态，**一行**展示。
-
-        两者都是"我现在什么水平、今天做没做"，属于同一层信息。
-        分两块渲染时视觉重心散掉，还会把下面的表格莫名推低。
-
-        这里**不套 MyBox**：下面的表格已经有一个主 spinner 了，
-        再叠一个会出现两处转圈、两个遮罩，看起来像两个独立的加载层。
-        加载期间整页只需要一个进度指示。
-      */}
-      <TaskStats
-        growth={realm === "cn" ? (accounts[0]?.growth ?? null) : null}
-        actionRows={actionRows}
-      />
+      <MyBox isLoading={isLoading} text="" className="shrink-0">
+        <TaskStats
+          accounts={visibleAccounts}
+          showGrowth={realm === "cn"}
+          actionRows={actionRows}
+        />
+      </MyBox>
 
       <MyBox
         /*

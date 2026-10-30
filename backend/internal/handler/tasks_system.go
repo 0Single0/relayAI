@@ -25,6 +25,7 @@ func registerTasks(mux *http.ServeMux, ctx *svc.ServiceContext) {
 
 	// 实时快照：代理网关（N 次上游请求，慢）。
 	mux.HandleFunc("GET /tasks/channels/{id}/live", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
 		live, err := ctx.Gateway.GetTaskLive(r.Context(), r.PathValue("id"))
 		if err != nil {
 			httpx.FailError(w, r, err)

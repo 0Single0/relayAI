@@ -1,6 +1,6 @@
 import { Flame, Fuel, type LucideIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
-import type { GrowthSnapshot } from "@/api/types";
+import type { TaskAccountLive } from "@/api/types";
 import type { TaskRow } from "@/pages/Tasks/taskRows";
 
 /**
@@ -30,10 +30,10 @@ type Cell = {
   hint?: string;
 };
 
-const StatusCell = ({ cell }: { cell: Cell }) => {
+const StatusCell = ({ cell, className }: { cell: Cell; className?: string }) => {
   const Icon = cell.icon;
   return (
-    <div className="flex min-w-0 flex-col gap-0.5 bg-card px-3 py-2.5">
+    <div className={cn("flex min-w-0 flex-col gap-0.5 bg-card px-3 py-2.5", className)}>
       <span className="flex items-center gap-1 text-[11px] text-muted-foreground">
         <Icon className="size-3 shrink-0" aria-hidden="true" />
         <span className="truncate">{cell.label}</span>
@@ -67,29 +67,43 @@ const actionCell = (row: TaskRow): Cell => {
 };
 
 export const TaskStats = ({
-  growth,
+  accounts,
+  showGrowth,
   actionRows,
 }: {
-  growth: GrowthSnapshot | null;
+  accounts: TaskAccountLive[];
+  showGrowth: boolean;
   actionRows: TaskRow[];
 }) => {
   const cells: Cell[] = [];
 
   // 成长数据只在国内版有；国际版只有每日动作，这里自然就只剩动作格。
-  if (growth) {
+  if (showGrowth && accounts.length > 0) {
+    const single = accounts.length === 1;
+    const growth = single ? accounts[0].growth : null;
+    const complete = accounts.every((account) => account.growth?.energy != null);
+    const energy = complete
+      ? accounts.reduce((sum, account) => sum + (account.growth?.energy ?? 0), 0)
+      : null;
+    const energyHint = single
+      ? growth?.energyError || "未获取到能量数据，请刷新重试"
+      : "部分账号查询失败，请选择账号查看原因";
+    const streakDays = growth?.streakDays;
     cells.push({
       key: "energy",
       icon: Fuel,
       label: "加油站能量",
-      value: growth.energy === null ? "—" : String(growth.energy),
-      hint: growth.energy === null ? "上游未返回" : undefined,
+      value: energy === null ? "—" : String(energy),
+      hint: energy === null ? energyHint : single ? undefined : `${accounts.length} 个账号合计`,
     });
     cells.push({
       key: "streak",
       icon: Flame,
       label: "连续登录",
-      value: growth.streakDays === null ? "—" : `${growth.streakDays} 天`,
-      hint: growth.streakDays === null ? "上游未返回" : undefined,
+      value: !single ? "按账号查看" : streakDays == null ? "—" : `${streakDays} 天`,
+      hint: !single
+        ? "请选择一个账号查看连续登录天数"
+        : streakDays == null ? growth?.streakError || "未获取到连续登录数据，请刷新重试" : undefined,
     });
   }
 
@@ -101,6 +115,8 @@ export const TaskStats = ({
 
   return (
     <div
+      role="region"
+      aria-label="账号成长与每日状态"
       className={cn(
         "grid overflow-hidden rounded-lg border",
         // 窄屏两列；宽屏一律一行 —— 无论 2 格还是 4 格。
@@ -108,8 +124,12 @@ export const TaskStats = ({
         cells.length >= 4 ? "sm:grid-cols-4" : cells.length === 3 ? "sm:grid-cols-3" : "sm:grid-cols-2",
       )}
     >
-      {cells.map((cell) => (
-        <StatusCell key={cell.key} cell={cell} />
+      {cells.map((cell, index) => (
+        <StatusCell
+          key={cell.key}
+          cell={cell}
+          className={cells.length % 2 === 1 && index === cells.length - 1 ? "col-span-2 sm:col-span-1" : undefined}
+        />
       ))}
     </div>
   );

@@ -12,10 +12,12 @@ import type {
 export const listTaskChannels = () =>
   APIRequest<TaskChannel[]>({ url: "/tasks/channels", method: "GET" });
 
-export const getTaskChannelLive = (channelId: string) =>
+export const getTaskChannelLive = (channelId: string, signal?: AbortSignal) =>
   APIRequest<TaskChannelLive>({
     url: `/tasks/channels/${encodeURIComponent(channelId)}/live`,
     method: "GET",
+    signal,
+    headers: { "Cache-Control": "no-cache", Pragma: "no-cache" },
   });
 
 export type StartRunPayload = {

@@ -392,8 +392,11 @@ export type TaskAccountLive = {
 export type GrowthSnapshot = {
   /** 加油站：当前能量余额。 */
   energy: number | null;
+  /** 查询失败或响应缺少有效数值时的原因。 */
+  energyError?: string | null;
   /** 连登：连续天数。 */
   streakDays: number | null;
+  streakError?: string | null;
   /** 连登：补签卡余额。 */
   makeupCards: number | null;
   /** 连登：7 / 14 / 28 天档位状态。 */
