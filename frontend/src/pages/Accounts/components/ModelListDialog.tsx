@@ -66,10 +66,18 @@ export const ModelListButton = ({
         "focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:outline-none",
       )}
     >
-      <span>
+      {/*
+        两段各自不折行：「查看模型」被拆成「查看 / 模型」就读不通了；
+        限流后缀是附注，列宽实在不够时允许它单独换到第二行，
+        但不能把主标签也一起拆开。
+      */}
+      <span className="whitespace-nowrap">
         {isWorkbuddy ? "查看模型" : `${models.length} 个`}
-        {limits.length > 0 ? ` · ${limits.length} 限流` : ""}
+        {limits.length > 0 ? " ·" : ""}
       </span>
+      {limits.length > 0 ? (
+        <span className="whitespace-nowrap">{`${limits.length} 限流`}</span>
+      ) : null}
       {limits.length > 0 ? (
         <span className="size-1.5 rounded-full bg-warning" aria-hidden="true" />
       ) : null}

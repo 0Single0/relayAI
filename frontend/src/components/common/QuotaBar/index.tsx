@@ -68,7 +68,8 @@ export const QuotaBar = ({
 
   return (
     <div className={cn("mx-auto flex w-full max-w-[132px] flex-col items-center gap-1", className)}>
-      <div className="flex w-full items-baseline justify-center gap-1 text-xs tabular-nums">
+      {/* `whitespace-nowrap`：剩余/总量一旦折行，"7219.1" 与 "/ 10.3k" 就分家了。 */}
+      <div className="flex w-full items-baseline justify-center gap-1 text-xs whitespace-nowrap tabular-nums">
         <span className={cn("font-medium", tone.text)}>{formatNumber(remaining)}</span>
         <span className="text-muted-foreground">/ {formatNumber(total)}</span>
       </div>

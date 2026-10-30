@@ -8,6 +8,15 @@ export type Column<T> = {
   /** 列宽（CSS 值）。 */
   width?: string;
   /**
+   * 列的最小宽度（CSS 值）。
+   *
+   * 存在的理由：默认的自动布局里 `width` 只是"意向宽度"，列多时浏览器会
+   * 把它压到内容的最小宽度 —— 「额度」的 `7219.1 / 10.3k` 被折成两行、
+   * 「模型」的「查看模型」折成「查看 / 模型」。这些列的内容一旦换行就读不懂，
+   * 所以给它们一个不可再压的下限，宁可让表格横向滚动。
+   */
+  minWidth?: string;
+  /**
    * 对齐方式，**默认居中**。
    *
    * 为什么默认居中：后台表格里绝大多数格是短标签、数字、图标按钮，
@@ -174,7 +183,11 @@ export function DataTable<T>({
               <th
                 key={column.key}
                 scope="col"
-                style={column.width ? { width: column.width } : undefined}
+                style={
+                  column.width || column.minWidth
+                    ? { width: column.width, minWidth: column.minWidth }
+                    : undefined
+                }
                 className={cn(
                   "bg-muted px-4 py-2 text-xs font-normal whitespace-nowrap text-muted-foreground",
                   !selection && index === 0 && "rounded-l-md",
