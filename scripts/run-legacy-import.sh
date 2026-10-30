@@ -33,7 +33,10 @@ if [ "$mode" = '--preview' ]; then
   echo 'Preview complete. Database unchanged. Run again with --apply to import.'
   exit 0
 fi
-backup_dir="$PWD/data/legacy-import-backups/$(date -u +%Y%m%dT%H%M%SZ)-$$"
+postgres_container=$(docker compose ps -q postgres)
+postgres_data=$(docker inspect --format '{{range .Mounts}}{{if eq .Destination "/var/lib/postgresql/data"}}{{.Source}}{{end}}{{end}}' "$postgres_container")
+if [ -z "$postgres_data" ]; then echo 'PostgreSQL data mount not found. Import was not started.' >&2; exit 1; fi
+backup_dir="$(dirname -- "$postgres_data")/legacy-import-backups/$(date -u +%Y%m%dT%H%M%SZ)-$$"
 mkdir -p "$backup_dir"
 if ! docker compose exec -T postgres pg_dump -U relayai -d relayai -Fc > "$backup_dir/relayai-before-import.dump"; then
   echo 'Database backup failed. Import was not started.' >&2

@@ -34,7 +34,7 @@ sh /绝对路径/导入包/run-import.sh --preview
 sh /绝对路径/导入包/run-import.sh --apply
 ```
 
-脚本支持当前项目默认的 `backend`、`postgres`、`gateway` Compose 服务和 `relayai` 数据库用户，支持 Linux amd64/arm64。自定义部署应先适配脚本。备份保存在当前部署目录的 `data/legacy-import-backups/<时间>-<PID>/relayai-before-import.dump`，位于已忽略的 `data/` 目录内。重复运行会跳过同 UID 账号；报告中的 `newAccounts` 在预览时表示预计新增数量，在实际写入成功后表示已提交数量。
+脚本支持当前项目默认的 `backend`、`postgres`、`gateway` Compose 服务和 `relayai` 数据库用户，支持 Linux amd64/arm64。自定义部署应先适配脚本。备份目录根据运行中的 PostgreSQL 容器实际挂载路径确定，默认保存到 `/home/ubuntu/relayAI/data/legacy-import-backups/<时间>-<PID>/relayai-before-import.dump`，不写入代码目录。重复运行会跳过同 UID 账号；报告中的 `newAccounts` 在预览时表示预计新增数量，在实际写入成功后表示已提交数量。
 
 导入包包含账号密文和旧主密钥，应按完整账号凭据保管，不提交 Git 或公开分享。脚本退出时清除容器里的临时导入文件，服务器及本机的导入包由操作者在完成后清理。
 

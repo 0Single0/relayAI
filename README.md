@@ -104,10 +104,10 @@ docker compose logs -f --tail=100 backend gateway web
 
 ### 数据挂载与备份
 
-全部业务数据和部署密钥均绑定挂载到**宿主机项目目录**：
+全部业务数据和部署密钥默认绑定挂载到宿主机的 **`/home/ubuntu/relayAI/data`**，独立于代码目录。可在 `.env` 中设置 `RELAYAI_DATA_DIR` 覆盖此路径：
 
 ```text
-data/
+/home/ubuntu/relayAI/data/
 ├── postgres/             # PostgreSQL：账号、分组、用户、设置、密钥、用量等
 └── secrets/
     ├── postgres_password # 自动生成的数据库密码
@@ -115,9 +115,19 @@ data/
     └── internal_token    # 后端与网关共享密钥
 ```
 
-`docker compose down`、重新构建或删除容器均保留这些文件；再次启动会复用原有密钥。`data/` 已加入 Git 和镜像构建忽略列表。若发现已有数据库却缺失密钥，初始化会报错，避免生成新密钥后无法解密旧账号。
+`docker compose down`、重新构建或删除容器均保留这些文件；再次启动会复用原有密钥。若发现已有数据库却缺失密钥，初始化会报错，避免生成新密钥后无法解密旧账号。
 
-完整备份时先执行 `docker compose down`，再复制整个 `data/` 目录；恢复时在服务停止的情况下放回整个目录，再执行 `docker compose up -d`。**数据库和 `secrets/` 必须一起备份，主密钥丢失会导致账号凭据无法解密。** 不要在数据库运行时直接复制 `postgres/` 文件作为备份。文件备份恢复需保持 PostgreSQL 主版本一致，本配置固定使用 16。
+完整备份时先执行 `docker compose down`，再复制整个 `/home/ubuntu/relayAI/data/` 目录（自定义路径时使用实际目录）；恢复时在服务停止的情况下放回整个目录，再执行 `docker compose up -d`。**数据库和 `secrets/` 必须一起备份，主密钥丢失会导致账号凭据无法解密。** 不要在数据库运行时直接复制 `postgres/` 文件作为备份。文件备份恢复需保持 PostgreSQL 主版本一致，本配置固定使用 16。
+
+已经使用旧版代码目录下 `./data` 的部署，需要先停服务，再迁移数据。以下命令在原代码目录执行，目标目录必须尚不存在；如果目标已存在，先检查内容，不要混合两套数据库：
+
+```sh
+sudo docker compose down
+sudo mkdir -p /home/ubuntu/relayAI
+sudo test ! -e /home/ubuntu/relayAI/data && sudo cp -a ./data /home/ubuntu/relayAI/data
+```
+
+确认复制成功后，使用新版 Compose 配置执行 `sudo docker compose up -d`。如 `.env` 已设置 `RELAYAI_DATA_DIR`，将其改为 `/home/ubuntu/relayAI/data`。复制保留原文件及权限，确认新目录中的账号、配置正常后再自行清理旧目录。不要跳过迁移直接启动，否则空目录会初始化为新数据库。
 
 容器日志输出到 `docker compose logs`，每个服务最多保留 3 个 10 MB 日志文件。后端配置绑定挂载自 `deploy/docker/backend.yaml`，修改后执行 `docker compose restart backend`。
 
@@ -135,7 +145,7 @@ RELAYAI_PORT=8080
 
 然后执行 `docker compose up -d` 应用配置。默认通过 `http://服务器IP:8080` 打开管理台时，客户端 Base URL 自动显示为 `http://服务器IP:8080/v1`；通过 HTTPS 域名打开时也会跟随浏览器地址。若之前在 `.env` 中显式写过 `GATEWAY_PUBLIC_BASE_URL=http://localhost:8080`，删除该配置或改成 `same-origin` 即可启用自动识别。
 
-Compose 使用 `data/secrets/` 中的独立密钥和容器内数据库，不读取本地开发用的 `DATABASE_URL`、`RELAYAI_MASTER_KEY` 等环境变量。首次容器部署使用一个新库；原来本地 PostgreSQL 的数据需要另行迁移，迁移账号凭据时必须同时保留原加密主密钥。
+Compose 使用持久化目录下 `secrets/` 中的独立密钥和容器内数据库，不读取本地开发用的 `DATABASE_URL`、`RELAYAI_MASTER_KEY` 等环境变量。首次容器部署使用一个新库；原来本地 PostgreSQL 的数据需要另行迁移，迁移账号凭据时必须同时保留原加密主密钥。
 
 更新源码后重新构建、启动：
 
@@ -153,7 +163,7 @@ sudo docker pull postgres:16-alpine
 curl -I --connect-timeout 10 --max-time 20 https://registry-1.docker.io/v2/
 ```
 
-若服务器已经有其他项目使用的 PostgreSQL 16 镜像，可在根目录 `.env` 中指定同一标签，例如 `POSTGRES_IMAGE=postgres:16.9-bookworm`。这只复用镜像，relayAI 仍使用独立的 `data/postgres/` 数据目录，不连接其他项目的数据库。
+若服务器已经有其他项目使用的 PostgreSQL 16 镜像，可在根目录 `.env` 中指定同一标签，例如 `POSTGRES_IMAGE=postgres:16.9-bookworm`。这只复用镜像，relayAI 仍使用独立的 `/home/ubuntu/relayAI/data/postgres/` 数据目录，不连接其他项目的数据库。
 
 Compose 已为本地构建的服务设置 `pull_policy: build`，避免尝试从镜像仓库下载项目自己的镜像。三个 Dockerfile 使用 BuildKit 内置语法，减少额外拉取 `docker/dockerfile` 前端镜像的需要。
 
