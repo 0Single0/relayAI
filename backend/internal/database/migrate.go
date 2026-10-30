@@ -41,8 +41,8 @@ type migrationEntry struct {
 
 // explicitMigrations 是**按需追加**的表结构变更。
 //
-// 当前为空：所有表都由 `All()` 里的模型定义描述，AutoMigrate 一次建全。
-// 后续遇到"删列 / 改名 / 数据搬迁"再往这里加。
+// 大多数表由 `All()` 里的模型定义描述，AutoMigrate 一次建全；
+// 这里只放 AutoMigrate 故意不处理的那几类：放宽约束、改外键行为、数据搬迁。
 var explicitMigrations = []migrationEntry{
 	/*
 		账号可以先建、后分配分组（`channel_id` 允许 NULL）。
@@ -66,6 +66,51 @@ var explicitMigrations = []migrationEntry{
 			}
 			// 外键不受影响：NULL 不违反外键。
 			return tx.Exec("ALTER TABLE accounts ALTER COLUMN channel_id DROP NOT NULL").Error
+		},
+	},
+	/*
+		删分组**不再删账号**，只把账号摘成"待分配"。
+
+		为什么必须改：账号是一份上游凭据（有历史用量、有登录态），
+		分组只是计价桶。桶不要了，号不该跟着消失 —— 用户的本意
+		（"这个分组我不想要了"）和"把这些号也删了"是两件事，
+		而级联删除把它们绑成一件，且不可撤销。
+
+		做法：把 accounts.channel_id 的外键从 CASCADE 换成 SET NULL。
+		约束名在历史库上可能不同（`accounts_channel_id_fkey` / GORM 自动命名），
+		所以按"accounts 表上引用 channels 的外键"动态查出来再删，
+		而不是硬编码一个名字。
+	*/
+	{
+		version: "20261030_account_survives_channel_delete",
+		up: func(tx *gorm.DB) error {
+			const dropExisting = `
+DO $$
+DECLARE
+    constraint_name text;
+BEGIN
+    FOR constraint_name IN
+        SELECT con.conname
+        FROM pg_constraint con
+        JOIN pg_class rel ON rel.oid = con.conrelid
+        JOIN pg_class ref ON ref.oid = con.confrelid
+        JOIN pg_attribute att ON att.attrelid = rel.oid AND att.attnum = ANY (con.conkey)
+        WHERE rel.relname = 'accounts'
+          AND ref.relname = 'channels'
+          AND con.contype = 'f'
+          AND att.attname = 'channel_id'
+    LOOP
+        EXECUTE format('ALTER TABLE accounts DROP CONSTRAINT %I', constraint_name);
+    END LOOP;
+END
+$$;`
+			if err := tx.Exec(dropExisting).Error; err != nil {
+				return err
+			}
+			return tx.Exec(`
+ALTER TABLE accounts
+    ADD CONSTRAINT accounts_channel_id_fkey
+    FOREIGN KEY (channel_id) REFERENCES channels (id) ON DELETE SET NULL`).Error
 		},
 	},
 }

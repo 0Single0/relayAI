@@ -171,3 +171,53 @@ func TestUserAndBalance(t *testing.T) {
 		t.Error("重复邮箱应报错")
 	}
 }
+
+/*
+删分组**不能删账号**。
+
+这是一个真实的用户投诉：「为什么我删除分组会连带着账号删除？不应该
+是把账号弄成未归属状态吗」。账号是一份上游凭据（凭据、登录态、历史用量），
+分组只是计价桶 —— 桶不要了，号不该跟着消失。
+
+外键必须是 `ON DELETE SET NULL`。写成 CASCADE 时删分组会静默删掉整组账号，
+而且不可撤销；这个用例就是用来守住它的。
+*/
+func TestDeleteChannelKeepsAccountsAsUnassigned(t *testing.T) {
+	s, _ := testDB(t)
+	ctx := context.Background()
+
+	enabled := true
+	if _, err := s.CreateChannel(ctx, store.ChannelInput{
+		ID:      "wb-group",
+		Name:    "待删除分组",
+		Adapter: "workbuddy",
+		Enabled: &enabled,
+		Options: []byte(`{"realm":"cn"}`),
+	}); err != nil {
+		t.Fatalf("新建分组失败: %v", err)
+	}
+
+	created, err := s.CreateAccount(ctx, "wb-group", "uid-keep", "保留号", "")
+	if err != nil {
+		t.Fatalf("建号失败: %v", err)
+	}
+	if created.ChannelID != "wb-group" {
+		t.Fatalf("账号应归入分组，得到 %q", created.ChannelID)
+	}
+
+	if err := s.DeleteChannel(ctx, "wb-group"); err != nil {
+		t.Fatalf("删除分组失败: %v", err)
+	}
+
+	// 账号必须还在，且 channel_id 变成空串（待分配）。
+	kept, err := s.FindAccountByUID(ctx, "", "uid-keep")
+	if err != nil {
+		t.Fatalf("删分组后账号不该消失: %v", err)
+	}
+	if kept.ChannelID != "" {
+		t.Errorf("删分组后账号应回到待分配（channelId 为空），得到 %q", kept.ChannelID)
+	}
+	if !kept.Enabled {
+		t.Error("删分组不该顺手停用账号")
+	}
+}

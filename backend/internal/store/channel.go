@@ -352,7 +352,16 @@ func (s *Store) UpdateChannel(ctx context.Context, id string, input ChannelInput
 	return s.GetChannel(ctx, id)
 }
 
-// DeleteChannel 删除渠道（级联删账号）。
+// DeleteChannel 删除分组。
+//
+// **不删账号**：`accounts.channel_id` 的外键是 `ON DELETE SET NULL`
+// （见 `database.explicitMigrations` 里的 `20261030_account_survives_channel_delete`）。
+// 组里的号会变成"待分配"——它们仍然带着自己的凭据、历史用量和登录态，
+// 只是不再属于任何计价桶、不参与对外调度。
+//
+// 为什么必须这样：账号是一份上游凭据，分组只是计价桶。
+// "这个分组我不要了"和"把这些号也删掉"是两件事，级联删除把它们绑成一件，
+// 而且不可撤销 —— 一次误点就丢掉了所有登录态。
 func (s *Store) DeleteChannel(ctx context.Context, id string) error {
 	result := s.db.WithContext(ctx).Where("id = ?", id).Delete(&models.Channels{})
 	if result.Error != nil {

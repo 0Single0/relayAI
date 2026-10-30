@@ -1,4 +1,4 @@
-﻿import { Boxes, Eye, PencilLine, Plus, RefreshCw, Search, Trash2 } from "lucide-react";
+import { Boxes, Eye, PencilLine, Plus, RefreshCw, Search, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { listChannels } from "@/api/channels";
@@ -61,9 +61,9 @@ export const ChannelsPage = () => {
   /**
    * 删除分组。
    *
-   * **会连带删掉组内账号**（外键是 CASCADE）：账号是「这个分组下的号」，
-   * 分组没了留着它们只会变成没有归属的孤儿。所以确认框里必须写明这一点，
-   * 并给出当前账号数 —— 让人知道自己在删什么。
+   * **不会删账号**：组内的号会变成"待分配"（保留凭据、用量与登录态），
+   * 只是不再属于任何计价桶、不参与对外调度。
+   * 所以确认框只要说清"这些号会被摘出来"，不需要红色警告说"会被一并删掉"。
    */
   const confirmDelete = useCallback(async () => {
     if (!deleting) {
@@ -359,20 +359,21 @@ export const ChannelsPage = () => {
 
       <ChannelModelsDialog channel={modelTarget} onClose={() => setModelTarget(null)} onSaved={() => { setModelTarget(null); setReloadKey((value) => value + 1); }} />
 
-      {/* 删除确认：必须说清"会连带删掉账号"，这是不可撤销的操作。 */}
+      {/* 删除确认：必须说清账号**不会**被删，只是回到"待分配"。 */}
       <Dialog open={deleting !== null} onOpenChange={(next) => !next && setDeleting(null)}>
         <DialogContent className="max-w-md">
           <DialogHeader>
             <DialogTitle>删除分组 · {deleting?.name}</DialogTitle>
             <DialogDescription>
               {deleting && deleting.accountCount > 0
-                ? `该分组下有 ${deleting.accountCount} 个账号，删除分组会一并删掉它们。此操作不可撤销。`
+                ? `该分组下有 ${deleting.accountCount} 个账号，删除分组后它们会变成「待分配」。此操作不可撤销。`
                 : "该分组下没有账号，删除后不可撤销。"}
             </DialogDescription>
           </DialogHeader>
 
-          <p className="rounded-md bg-warning/10 px-3 py-2 text-[11px] leading-5 text-warning">
-            账号是「分组下的号」，分组没了它们会变成没有归属的孤儿，所以一并删除。
+          <p className="rounded-md bg-muted/50 px-3 py-2 text-[11px] leading-5 text-muted-foreground">
+            账号不会被删除：凭据、登录态与历史用量都保留，只是不再挂在任何分组下，
+            也不再参与对外调度。之后可以在「账号管理」里重新分配。
             如果只是不想让它对外提供服务，请改为**停用**分组。
           </p>
 
