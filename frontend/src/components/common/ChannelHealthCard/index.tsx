@@ -236,14 +236,32 @@ export const ChannelHealthCard = ({ channel, days }: ChannelHealthCardProps) => 
         </p>
       )}
 
+      {/*
+        当前失败原因。
+
+        后端只在**最近一条探活失败**时给 lastError，所以这条红字表示
+        "此刻还没通"，不是历史账本 —— 恢复后它自己会消失。
+        但仍然要带上发生时间：那条记录可能已经维持了几十分钟，
+        只给一句话没有时效性，用户会把它当成"从刚才就一直这样"。
+      */}
       {channel.lastError ? (
-        <p
-          className="line-clamp-2 rounded-md bg-destructive/5 px-2 py-1.5 text-[11px] leading-4 text-destructive"
+        <div
+          className="rounded-md bg-destructive/5 px-2 py-1.5 text-destructive"
           title={channel.lastError}
         >
-          <Radio className="mr-1 inline size-3" aria-hidden="true" />
-          {channel.lastError}
-        </p>
+          <p className="line-clamp-2 text-[11px] leading-4">
+            <Radio className="mr-1 inline size-3" aria-hidden="true" />
+            {channel.lastError}
+          </p>
+          {channel.lastErrorAt ? (
+            <p
+              className="mt-0.5 text-[10px] leading-3 text-destructive/70"
+              title={channel.lastErrorAt}
+            >
+              最近一次失败：{formatAgo(channel.lastErrorAt)}
+            </p>
+          ) : null}
+        </div>
       ) : null}
     </article>
   );

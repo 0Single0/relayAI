@@ -169,6 +169,9 @@ pub async fn open_chat_session(
     let mut tried: HashSet<AccountKey> = HashSet::new();
     let mut attempts = 0usize;
     let mut last_error: Option<GatewayError> = None;
+    // 本轮已经因为 401 强制刷新过凭据的账号：每个号只刷一次，
+    // 避免"刷新完 token 又被吊销"的号把刷新端点打成热点。
+    let mut refreshed_once: HashSet<AccountKey> = HashSet::new();
 
     // 攒下"每个候选为什么没被选中"：全池失败时要把真实原因告诉调用方，
     // 而不是笼统地说"冷却或并发已满"（那会误导排查）。
@@ -303,6 +306,50 @@ pub async fn open_chat_session(
                 });
             }
             Err(error) => {
+                /*
+                  上游说凭据不认（401）时，先**强制刷新一次**再重试同一个号。
+
+                  为什么必须有这一步：选号路径的保鲜只在凭据"临期 2 分钟"时才刷新
+                  （`refresh::ensure_credential`），但上游会因为风控 / 改密 / 异地登录
+                  **提前吊销** token —— 本地 `expires_at_ms` 还没到，于是每轮探活、
+                  每个请求都拿着同一个已经作废的 token 打上游，稳定得到 401，
+                  而 refresh_token 明明还有效、一次刷新就能自愈。
+
+                  只在 `Account` 范围内做：模型级 401 与调用方权限无关，
+                  刷新换不出新权限。`refreshed_once` 保证每个号每轮只刷一次，
+                  否则一个反复被吊销的号会把刷新端点打成热点。
+                */
+                let mut error = error;
+                if error.kind == ErrorKind::AuthExpired
+                    && matches!(error.scope, ErrorScope::Account)
+                    && !refreshed_once.contains(&candidate.account.key)
+                {
+                    refreshed_once.insert(candidate.account.key.clone());
+                    match refresh::refresh(state, &candidate.account, true).await {
+                        Ok(_) => {
+                            eprintln!(
+                                "[gateway] trace={trace_id} 上游 401，已强制刷新凭据并重试 {}",
+                                candidate.account.key
+                            );
+                            // 重试同一个号：先把槽位归还再走下一轮挑选。
+                            drop(guard);
+                            attempts -= 1;
+                            tried.remove(&candidate.account.key);
+                            continue;
+                        }
+                        Err(refresh_error) => {
+                            // 刷新失败说明真的得重新登录：把刷新失败的原因带上，
+                            // 否则界面上只剩一句"401"，看不出是哪一环断了。
+                            error = GatewayError::new(
+                                error.kind,
+                                error.scope,
+                                error.status,
+                                format!("{}；强制刷新凭据失败：{}", error.message, refresh_error.message),
+                                error.retryable,
+                            );
+                        }
+                    }
+                }
                 // 收窄范围时也用 upstream 名 —— 池子里的模型冷却就是按它记的。
                 let error = narrow_scope(error, &candidate.route.upstream_model);
                 candidate.account.apply_error(&error, &policy, now_ms());
@@ -678,7 +725,9 @@ pub async fn probe_account(
         ));
     }
 
-    let attempt = async {
+    // 用闭包而不是直接保存 future：401 之后要**再跑一次同样的探针**，
+    // 而 async 块只能被 await 一次（move 之后再使用时编译器会报 E0382）。
+    let attempt = || async {
         // 同上：探活也要按账号走代理，否则"绑了代理的号"探活结果代表不了它真实的出口。
         let client = state.client_for(&account)?;
         let frames = adapter
@@ -702,7 +751,38 @@ pub async fn probe_account(
         Ok::<_, GatewayError>(completion)
     };
 
-    match tokio::time::timeout(timeout, attempt).await {
+    /*
+      第一次失败时，若上游说的是"凭据不认"，就强制刷新一次再探。
+
+      为什么探活也要做这一步：探活是**发现故障**的手段，如果它和普通请求一样
+      只在"临期 2 分钟"才刷新，那么"被上游提前吊销但本地没过期"的号会每轮
+      稳定报 401 —— 面板上那条红字看起来像永久的，其实账号一刷就能好。
+      刷新失败才把 401 如实报出去（那时真的需要重新登录）。
+    */
+    let first = tokio::time::timeout(timeout, attempt()).await;
+    let outcome = match first {
+        Ok(Err(error)) if error.kind == ErrorKind::AuthExpired => {
+            match refresh::refresh(state, account, true).await {
+                Ok(_) => {
+                    eprintln!("[gateway] 探活遇到 401，已强制刷新凭据并重试 {}", account.key);
+                    tokio::time::timeout(timeout, attempt()).await
+                }
+                Err(refresh_error) => {
+                    account.apply_error(&error, &state.pool.policy(), now_ms());
+                    return Err(GatewayError::new(
+                        error.kind,
+                        error.scope,
+                        error.status,
+                        format!("{}；强制刷新凭据失败：{}", error.message, refresh_error.message),
+                        error.retryable,
+                    ));
+                }
+            }
+        }
+        other => other,
+    };
+
+    match outcome {
         Err(_) => {
             let error = GatewayError::network("探针超时");
             account.apply_error(&error, &state.pool.policy(), now_ms());

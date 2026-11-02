@@ -278,19 +278,32 @@ func (s *Store) attachChannelRecentProbes(
 	return rows.Err()
 }
 
-// attachChannelLastProbeError 填最近一次**探活失败**的原因。
+// attachChannelLastProbeError 填**当前仍然失败**的探活原因。
 //
-// 只取 `ok = false` 的行：`status = 'ok'` 时 `message` 是空串，
-// 拿它当"最近错误"会让卡片显示一条空白的红色提示。
+// 判定的不是"历史上最近一次失败"，而是"**最近一条探活**是不是失败的"：
+// 那个分组此刻还在失败，红字才有意义；已经恢复的分组不该继续挂着旧错误。
+//
+// 为什么必须这样（踩过的坑）：早先的写法是
+//
+//	SELECT DISTINCT ON (channel_id) ... WHERE NOT ok ORDER BY checked_at DESC
+//
+// 只挑失败行做去重，于是**成功记录完全不参与** —— 一条两周前的 401 会永远
+// 挂在卡片上，而它旁边的细条可能已经连绿 60 格、可用性 99%。用户看到的是
+// "刚刚探活成功"和"401"并排，只能理解成系统坏了，真正的线索反而被淹没。
+//
+// 现在的口径与卡片上其他数字同源：最近一次探活失败 → 显示原因；
+// 最近一次成功 → lastError 为 nil，红字消失（历史仍留在 `channel_probes` 里）。
+//
+// 附带说明：`status = 'ok'` 时 `message` 是空串，所以只在失败行上取 message，
+// 不会出现一条空白的红色提示。
 func (s *Store) attachChannelLastProbeError(
 	ctx context.Context,
 	list []ChannelHealth,
 	index map[string]int,
 ) error {
 	const query = `
-		SELECT DISTINCT ON (channel_id) channel_id, message, checked_at
+		SELECT DISTINCT ON (channel_id) channel_id, ok, message, checked_at
 		FROM channel_probes
-		WHERE NOT ok
 		ORDER BY channel_id, checked_at DESC, id DESC`
 
 	rows, err := s.db.WithContext(ctx).Raw(query).Rows()
@@ -301,9 +314,15 @@ func (s *Store) attachChannelLastProbeError(
 
 	for rows.Next() {
 		var channelID, detail string
+		var ok bool
 		var ts any
-		if err := rows.Scan(&channelID, &detail, &ts); err != nil {
+		if err := rows.Scan(&channelID, &ok, &detail, &ts); err != nil {
 			return fmt.Errorf("扫描分组最近探活失败原因失败: %w", err)
+		}
+		// 最近一条是成功：这个分组此刻是通的，不显示历史失败。
+		// 失败原文仍然留在 `channel_probes` 里，翻「探活历史」能看到。
+		if ok {
+			continue
 		}
 		if position, ok := index[channelID]; ok {
 			list[position].LastError = &detail

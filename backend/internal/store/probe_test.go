@@ -3,6 +3,7 @@ package store_test
 import (
 	"context"
 	"testing"
+	"time"
 
 	"relayai/backend/internal/models"
 	"relayai/backend/internal/store"
@@ -161,5 +162,82 @@ func TestSaveAndReadProbes(t *testing.T) {
 	}
 	if len(history) != 2 {
 		t.Fatalf("历史应有 2 条，得到 %d 条", len(history))
+	}
+}
+
+/*
+「分组状态」卡片上的红字只描述**此刻**，不是历史账本。
+
+真实的坑：一条两周前的 401 会永远挂在卡片上，而旁边细条连绿、可用性 99%。
+用户看到"刚刚探活成功"和"401"并排，只能理解成系统坏了，真正的线索被淹没。
+
+所以口径是：最近一条探活失败 → 显示原因；最近一条成功 → 不显示。
+历史失败仍然留在表里（`ProbeHistory` 能查到），只是不再冒充当前故障。
+*/
+func TestLastProbeErrorClearsAfterRecovery(t *testing.T) {
+	s, _ := testDB(t)
+	ctx := context.Background()
+
+	visible := true
+	if _, err := s.CreateChannel(ctx, store.ChannelInput{
+		ID:            "ch-flaky",
+		Name:          "ch-flaky",
+		Adapter:       "workbuddy",
+		StatusVisible: &visible,
+	}); err != nil {
+		t.Fatalf("建分组失败: %v", err)
+	}
+
+	healthOf := func() store.ChannelHealth {
+		t.Helper()
+		list, err := s.ListChannelHealth(ctx, time.Time{})
+		if err != nil {
+			t.Fatalf("读取分组健康度失败: %v", err)
+		}
+		for _, item := range list {
+			if item.ID == "ch-flaky" {
+				return item
+			}
+		}
+		t.Fatal("分组不在健康度列表里")
+		return store.ChannelHealth{}
+	}
+
+	// 1) 只有一条失败：红字要出现，并带上发生时刻。
+	if err := s.SaveProbe(ctx, models.ChannelProbes{
+		ChannelID: "ch-flaky", Model: "m1", OK: false, Status: "auth",
+		Message: "401 Authorization Required", Trigger: "schedule",
+	}); err != nil {
+		t.Fatalf("保存探活失败: %v", err)
+	}
+	failed := healthOf()
+	if failed.LastError == nil || *failed.LastError != "401 Authorization Required" {
+		t.Fatalf("最近一条失败时应给出原因，得到 %v", failed.LastError)
+	}
+	if failed.LastErrorAt == nil || *failed.LastErrorAt == "" {
+		t.Error("失败原因必须带发生时刻，否则用户无法判断它有多旧")
+	}
+
+	// 2) 之后成功一次：旧 401 必须消失（这才是"一直都有 401"的根因）。
+	if err := s.SaveProbe(ctx, models.ChannelProbes{
+		ChannelID: "ch-flaky", Model: "m1", OK: true, Status: "ok",
+		LatencyMS: 120, Trigger: "schedule",
+	}); err != nil {
+		t.Fatalf("保存探活失败: %v", err)
+	}
+	recovered := healthOf()
+	if recovered.LastError != nil {
+		t.Errorf("最近一条成功时不该继续挂旧错误，得到 %q", *recovered.LastError)
+	}
+	if recovered.LastErrorAt != nil {
+		t.Errorf("错误消失时时刻也要跟着清空，得到 %q", *recovered.LastErrorAt)
+	}
+	// 历史不能被删：排障还要能翻到那条 401。
+	history, err := s.ProbeHistory(ctx, "ch-flaky", 10)
+	if err != nil {
+		t.Fatalf("查询历史失败: %v", err)
+	}
+	if len(history) != 2 {
+		t.Errorf("历史失败记录应保留，期望 2 条，得到 %d 条", len(history))
 	}
 }
