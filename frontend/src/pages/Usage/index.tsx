@@ -101,7 +101,7 @@ const exportRows = (logs: UsageLog[]) => {
     "缓存命中",
     "输出",
     "合计",
-    "成本",
+    "成本(元)",
     "首字(ms)",
     "耗时(ms)",
     "速度(token/s)",

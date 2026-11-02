@@ -6,7 +6,7 @@ import { cn } from "@/lib/utils";
  * 费用明细浮层：把"这笔钱怎么算出来的"摊开。
  *
  * 为什么值得单独做一个：
- *   用户看到一条 `$0.009446` 首先会问"凭什么"。只给总额、不给拆分，
+ *   用户看到一条 `¥0.009446` 首先会问"凭什么"。只给总额、不给拆分，
  *   他只能去比对别家的账单 —— 一旦对不上就不信任这个系统了。
  *   把「用量 × 单价，再乘倍率」摆出来，他自己就能验算。
  *
@@ -24,7 +24,7 @@ export const CostBreakdown = ({ log }: { log: UsageLog }) => {
   if (!snapshot) {
     return (
       <span className="group relative inline-flex items-center gap-1">
-        <span className="tabular-nums text-[13px] font-medium">${log.billedCost.toFixed(6)}</span>
+        <span className="tabular-nums text-[13px] font-medium">¥{log.billedCost.toFixed(6)}</span>
         <Info className="size-3 text-muted-foreground" aria-hidden="true" />
         <span
           role="tooltip"
@@ -50,7 +50,7 @@ export const CostBreakdown = ({ log }: { log: UsageLog }) => {
 
   return (
     <span className="group relative inline-flex items-center gap-1">
-      <span className="tabular-nums text-[13px] font-medium">${log.billedCost.toFixed(6)}</span>
+      <span className="tabular-nums text-[13px] font-medium">¥{log.billedCost.toFixed(6)}</span>
       <Info className="size-3 text-muted-foreground" aria-hidden="true" />
       <div
         role="tooltip"
@@ -89,7 +89,12 @@ export const CostBreakdown = ({ log }: { log: UsageLog }) => {
 
         <div className="my-1.5 border-t" />
 
-        <Row label="上游成本" value={formatMoney(log.upstreamCost)} muted />
+        {/*
+          「上游成本」是我们用参考单价折算出来的钱，不是上游实扣。
+          上游按积分扣费，这个数只用于对毛利，所以标为「参考」，
+          免得被当成"上游真的收了这笔钱"。
+        */}
+        <Row label="上游参考成本" value={formatMoney(log.upstreamCost)} muted />
         <Row
           label="倍率"
           value={`${snapshot.channelRatio.toFixed(2)}× ${snapshot.modelRatio.toFixed(2)}×`}
@@ -129,8 +134,8 @@ const Row = ({
 
 /** 金额：小于 0.01 时保留 6 位，否则 4 位 —— 太长的 0 会让人读不出量级。 */
 const formatMoney = (value: number) =>
-  value >= 0.01 ? `$${value.toFixed(4)}` : `$${value.toFixed(6)}`;
+  value >= 0.01 ? `¥${value.toFixed(4)}` : `¥${value.toFixed(6)}`;
 
 /** 单价：去掉无意义的尾零。 */
 const formatPrice = (value: number) =>
-  `$${Number.isInteger(value) ? value : value.toFixed(4)}`;
+  `¥${Number.isInteger(value) ? value : value.toFixed(4)}`;

@@ -115,7 +115,7 @@ export const ChannelUsageTab = ({ channelId }: ChannelUsageTabProps) => {
             },
             {
               label: "记账成本",
-              value: `$${summary.billedCost.toFixed(4)}`,
+              value: `¥${summary.billedCost.toFixed(4)}`,
             },
             {
               label: "成功率",

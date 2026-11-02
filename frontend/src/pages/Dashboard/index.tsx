@@ -54,8 +54,14 @@ const RANGES = [
   { hours: 24 * 30, label: "30 天", bucket: "day" },
 ] as const;
 
+/**
+ * 金额：`billed_cost` 与余额同一口径（元），所以用 `¥` 而不是 `$`。
+ *
+ * 上游账单是按积分扣的，换算成钱既不准也不该由我们替上游定义，
+ * 所以界面只显示我们自己的记账额度，不显示"上游实付"。
+ */
 const formatCost = (value: number) =>
-  value >= 1 ? `$${value.toFixed(2)}` : `$${value.toFixed(4)}`;
+  value >= 1 ? `¥${value.toFixed(2)}` : `¥${value.toFixed(4)}`;
 
 const formatMs = (value: number | null) =>
   value === null ? "—" : value >= 1000 ? `${(value / 1000).toFixed(2)}s` : `${value}ms`;
@@ -369,14 +375,20 @@ export const DashboardPage = () => {
           <StatCard
             label="账户余额"
             value={`¥${(user?.balance ?? 0).toFixed(2)}`}
-            hint={user ? `累计充值 ¥${user.totalRecharged.toFixed(2)}` : "未登录"}
+            hint={user ? "按记账额度扣减" : "未登录"}
             icon={Wallet}
             tone="green"
           />
+          {/*
+            今日消费只放 `billed_cost`（记账额度）。
+            `upstream_cost` 不进界面：它是「token × 参考单价」折算出来的钱，
+            而上游账单按积分扣，两者根本不是同一个口径 ——
+            摆在一起读会被当成"上游实付了这笔钱"，正好是相反的结论。
+          */}
           <StatCard
             label="今日消费"
             value={formatCost(today.billedCost)}
-            hint={`上游实付 ${formatCost(today.upstreamCost)}`}
+            hint="已含模型与分组倍率"
             icon={Coins}
             tone="amber"
             spark={sparks.tokens}
