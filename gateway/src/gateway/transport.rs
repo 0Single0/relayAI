@@ -116,6 +116,41 @@ pub async fn send(
     })
 }
 
+/// 取 URL 的 origin（`scheme://host[:port]`）。
+///
+/// 端点 PING 打的是"这台主机在不在"，不是某个业务接口：
+/// 业务接口要鉴权、要计费，而 PING 的价值恰恰是**不带凭据**也能回答
+/// "是我这边出不去，还是上游挂了"。所以只保留 scheme + authority。
+pub fn origin_of(url: &str) -> Option<String> {
+    let (scheme, rest) = url.split_once("://")?;
+    if scheme.is_empty() {
+        return None;
+    }
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    if authority.is_empty() {
+        return None;
+    }
+    Some(format!("{scheme}://{authority}"))
+}
+
+/// 对 origin 发一次 HEAD，返回往返耗时（毫秒）。
+///
+/// 失败返回 `None`，**不影响**探活结论：有的主机对 HEAD 直接 405，
+/// 有的 CDN 只回 200 不带体；这些都与"对话能不能用"无关。
+/// 任何 HTTP 状态码都算通 —— 我们量的是网络往返，不是业务状态。
+pub async fn ping_origin(client: &reqwest::Client, origin: &str) -> Option<u64> {
+    let started = std::time::Instant::now();
+    let response = client
+        .head(origin)
+        .timeout(std::time::Duration::from_secs(5))
+        .send()
+        .await
+        .ok()?;
+    let elapsed = started.elapsed().as_millis() as u64;
+    drop(response);
+    Some(elapsed)
+}
+
 struct FrameState {
     response: reqwest::Response,
     buffer: Vec<u8>,

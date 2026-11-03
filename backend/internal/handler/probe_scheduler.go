@@ -54,13 +54,15 @@ const probeTimeout = 60 * time.Second
 
 // ProbeItem 是一条探测结果。
 type ProbeItem struct {
-	ChannelID string `json:"channelId"`
-	Model     string `json:"model"`
+	ChannelID  string `json:"channelId"`
+	Model      string `json:"model"`
 	AccountUID string `json:"accountUid"`
-	OK        bool   `json:"ok"`
-	LatencyMS int    `json:"latencyMs"`
-	Status    string `json:"status"`
-	Message   string `json:"message"`
+	OK         bool   `json:"ok"`
+	LatencyMS  int    `json:"latencyMs"`
+	// PingMS 是端点 PING（对上游 origin 的一次 HEAD 往返）；nil = 没测到。
+	PingMS  *int   `json:"pingMs"`
+	Status  string `json:"status"`
+	Message string `json:"message"`
 }
 
 // ProbeSweepResult 是一轮探活的统计。
@@ -177,6 +179,17 @@ func RunProbeOnce(
 		item.OK = probe != nil && probeErr == nil && probe.OK
 		if probe != nil {
 			item.LatencyMS = int(probe.LatencyMs)
+			/*
+				PingLatencyMs 是 `*int64`：网关测不到时给 null（渠道不提供 PING、
+				HEAD 超时），这里也必须原样传成 nil。
+
+				写成 0 会让卡片显示"端点 PING 0ms" —— 那是"极快"的意思，
+				和"没测"正好相反，比不显示更糟。
+			*/
+			if probe.PingLatencyMs != nil {
+				ping := int(*probe.PingLatencyMs)
+				item.PingMS = &ping
+			}
 		}
 		item.Status, item.Message = classifyProbe(item.OK, detail)
 
@@ -199,6 +212,7 @@ func RunProbeOnce(
 			AccountUID:    target.AccountUID,
 			OK:            item.OK,
 			LatencyMS:     item.LatencyMS,
+			PingMS:        item.PingMS,
 			Status:        item.Status,
 			Message:       truncate(item.Message, 500),
 			Trigger:       trigger,

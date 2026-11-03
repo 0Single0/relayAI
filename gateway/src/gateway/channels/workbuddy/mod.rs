@@ -200,6 +200,13 @@ impl ChannelAdapter for WorkbuddyChannel {
         refine(status, body, upstream_model)
     }
 
+    /// 端点 PING 打**对话主机**（`copilot.tencent.com` / `www.workbuddy.ai`），
+    /// 不是计费主机：计费挂了对话照样能用，反过来才有意义。
+    fn endpoint_origin(&self, account: &AccountSnapshot) -> Option<String> {
+        let (_, _, hosts) = self.identity_for(account);
+        Some(format!("https://{}", hosts.chat))
+    }
+
     async fn list_models(
         &self,
         client: &reqwest::Client,

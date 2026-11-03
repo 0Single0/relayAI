@@ -913,13 +913,31 @@ pub async fn probe_account(
                 Err(error) => return Err(error),
             }
         }
-        let completion = crate::gateway::protocol::encode::openai::fold(
-            &events,
-            "probe",
-            &upstream_model,
-            0,
-        )?;
+        let completion =
+            crate::gateway::protocol::encode::openai::fold(&events, "probe", &upstream_model, 0)?;
         Ok::<_, GatewayError>(completion)
+    };
+
+    /*
+      端点 PING 与对话探活**并行**发起。
+
+      为什么不等对话探完再 PING：串行会把两段耗时加在一起（对话 3s + PING 200ms），
+      而且 PING 的价值正是"在模型还没回话时先告诉用户网络是通的"。
+      它自带 5 秒超时，最坏情况也不会拖长整轮探活 —— 但为了不让它拖住结果，
+      spawn 出去后台跑，取结果时再 join。
+
+      目标 origin 由适配器给出（`endpoint_origin`）：那是渠道知识，
+      路由层不该硬编码任何域名。返回 `None` 的渠道（假渠道）就不 PING。
+    */
+    let ping_handle = match (
+        adapter.endpoint_origin(&account.snapshot()),
+        state.client_for(&account),
+    ) {
+        (Some(origin), Ok(client)) => Some(tokio::spawn(async move {
+            crate::gateway::transport::ping_origin(&client, &origin).await
+        })),
+        (Some(_), Err(_)) => None,
+        (None, _) => None,
     };
 
     /*
@@ -985,11 +1003,40 @@ pub async fn probe_account(
                 upstream_model,
                 reply: clip(&reply, 80),
                 latency_ms: started.elapsed().as_millis() as u64,
+                /*
+                  端点 PING 与对话**并行**跑完再取结果。
+
+                  为什么不让它参与 `latency_ms`：那两个数回答的是不同问题 ——
+                  「对话延迟」= 模型多久开始回话（含上游排队、推理），
+                  「端点 PING」= 这台主机在网络层多久回包。混在一起
+                  就再也分不清"是我网络慢"还是"上游模型慢"。
+
+                  PING 失败不影响探活结论（`None`）：有的主机对 HEAD 直接 405，
+                  那是端点策略，不是故障。
+                */
+                ping_latency_ms: match ping_handle {
+                    Some(handle) => handle.await.ok().flatten(),
+                    None => None,
+                },
                 prompt_tokens: usage["prompt_tokens"].as_u64().unwrap_or(0),
                 completion_tokens: usage["completion_tokens"].as_u64().unwrap_or(0),
             })
         }
     }
+}
+
+/// 单独探一次端点 PING（对话失败时用：区分"上不去"和"上游报错"）。
+///
+/// 为什么失败路径要单独再探一次：`probe_account` 只在成功时带回 ping
+/// （失败时整个 `ProbeOutcome` 都不存在），而"对话失败时网络到底通不通"
+/// 恰恰是排障最想知道的那一条 —— 网络断了要修网络，网络通着就是上游的事。
+///
+/// 返回 `None` = 这个渠道不提供 PING，或请求本身失败。
+pub async fn ping_endpoint(state: &GatewayState, account: &Arc<PoolAccount>) -> Option<u64> {
+    let adapter = state.adapter_for(account)?;
+    let origin = adapter.endpoint_origin(&account.snapshot())?;
+    let client = state.client_for(account).ok()?;
+    crate::gateway::transport::ping_origin(&client, &origin).await
 }
 
 /// 探针结果（面板展示）。
@@ -998,7 +1045,10 @@ pub struct ProbeOutcome {
     pub model: String,
     pub upstream_model: String,
     pub reply: String,
+    /// 对话延迟：从发请求到整条回复收完的端到端耗时。
     pub latency_ms: u64,
+    /// 端点 PING：对该渠道 origin 的一次 HEAD 往返；测不到时为 None。
+    pub ping_latency_ms: Option<u64>,
     pub prompt_tokens: u64,
     pub completion_tokens: u64,
 }

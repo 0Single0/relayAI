@@ -322,8 +322,10 @@ type ProbeResult struct {
 	OK        bool   `json:"ok"`
 	Model     string `json:"model"`
 	LatencyMs int64  `json:"latencyMs"`
-	Reply     string `json:"reply"`
-	Error     string `json:"error"`
+	// PingLatencyMs 同 AccountProbe：端点 PING，测不到为 null。
+	PingLatencyMs *int64 `json:"pingLatencyMs"`
+	Reply         string `json:"reply"`
+	Error         string `json:"error"`
 }
 
 // ProbeChannel 用该渠道第一个账号发一条最小请求。
@@ -417,8 +419,13 @@ func (c *Client) RefreshCredential(ctx context.Context, channelID, uid string) (
 type AccountProbe struct {
 	OK        bool   `json:"ok"`
 	LatencyMs int64  `json:"latencyMs"`
-	Reply     string `json:"reply"`
-	Error     string `json:"error"`
+	// PingLatencyMs 是对上游 origin 的一次 HEAD 往返；测不到时为 null。
+	//
+	// 与 LatencyMs 的差别是**问题不同**：那个是"模型多久开始回话"（含排队、推理），
+	// 这个是"这台主机在网络层多久回包"。分开存才能回答"是我这边慢，还是上游慢"。
+	PingLatencyMs *int64 `json:"pingLatencyMs"`
+	Reply         string `json:"reply"`
+	Error         string `json:"error"`
 }
 
 // ProbeAccount 用该账号的真实凭据打一次上游。

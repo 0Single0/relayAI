@@ -413,6 +413,19 @@ impl ChannelAdapter for CustomChannel {
         openai_compat::classify_openai_error(status, body)
     }
 
+    /// 端点 PING 打账号自己填的 origin。
+    ///
+    /// 自定义供应商的上游是用户给的任意中转站，所以 origin **必须**从账号的
+    /// `base_url` 现算 —— 写死任何一个域名都会测到别人家去。
+    /// 没填地址时返回 `None`（卡片显示 `—`），而不是拿一个空串去请求。
+    fn endpoint_origin(&self, account: &AccountSnapshot) -> Option<String> {
+        let base = self.base_url_for(account);
+        if base.is_empty() {
+            return None;
+        }
+        crate::gateway::transport::origin_of(&base)
+    }
+
     /// 目录就是配置里的清单：自定义供应商没有标准元数据端点可拉。
     async fn list_models(
         &self,

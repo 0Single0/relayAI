@@ -481,6 +481,7 @@ async fn probe_channel(State(state): State<SharedGateway>, Path(id): Path<String
             "ok": true,
             "model": outcome.model,
             "latencyMs": outcome.latency_ms,
+            "pingLatencyMs": outcome.ping_latency_ms,
             "reply": outcome.reply,
             "error": null,
         }))
@@ -489,6 +490,8 @@ async fn probe_channel(State(state): State<SharedGateway>, Path(id): Path<String
             "ok": false,
             "model": "",
             "latencyMs": started.elapsed().as_millis() as u64,
+            // 失败时也探一次端点：能区分"网络断了"和"模型报错"。
+            "pingLatencyMs": dispatch::ping_endpoint(&state, &account).await,
             "reply": "",
             "error": error.describe(),
         }))
@@ -558,6 +561,7 @@ async fn probe_account(
             // 回报实际用的模型：自动模式下由网关挑，用户有权知道"这个绿灯是哪条模型测的"。
             "model": outcome.model,
             "latencyMs": outcome.latency_ms,
+            "pingLatencyMs": outcome.ping_latency_ms,
             "reply": outcome.reply,
             "error": null,
         }))
@@ -566,6 +570,8 @@ async fn probe_account(
             "ok": false,
             "model": "",
             "latencyMs": started.elapsed().as_millis() as u64,
+            // 失败时也探一次端点：能区分"网络断了"和"模型报错"。
+            "pingLatencyMs": dispatch::ping_endpoint(&state, &account).await,
             "reply": "",
             "error": error.describe(),
         }))

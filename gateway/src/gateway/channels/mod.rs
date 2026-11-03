@@ -419,6 +419,18 @@ pub trait ChannelAdapter: Send + Sync {
         true
     }
 
+    /// 该账号要探测的 **origin**（`scheme://host[:port]`），用于「端点 PING」。
+    ///
+    /// 为什么不复用 `build_chat_request(...).url`：那个是业务接口，
+    /// 打它要带凭据、要算额度，而且"接口 200"和"主机可达"是两件事 ——
+    /// 端点 PING 想回答的恰恰是后者：**网络通不通**。
+    ///
+    /// 默认返回 `None`（这个渠道不提供端点 PING，界面上显示 `—`）；
+    /// 不硬编码一个通用值，因为"探哪个域名"本身就是渠道知识。
+    fn endpoint_origin(&self, _account: &AccountSnapshot) -> Option<String> {
+        None
+    }
+
     /// 用用户粘贴的回调地址完成登录，返回可落库的凭据。
     async fn login_complete(
         &self,

@@ -37,8 +37,17 @@ type ChannelProbes struct {
 	AccountUID string `gorm:"column:account_uid;type:text;not null;default:''" json:"accountUid"`
 	// OK 表示这次探测是否通。
 	OK bool `gorm:"column:ok;not null;default:false" json:"ok"`
-	// LatencyMS 是端到端耗时。
+	// LatencyMS 是端到端耗时（对话延迟）。
 	LatencyMS int `gorm:"column:latency_ms;not null;default:0" json:"latencyMs"`
+	// PingMS 是对上游 origin 的一次 HEAD 往返（端点 PING）。
+	//
+	// 与 LatencyMS 并存而不是替换：两者回答不同问题 ——
+	// 对话延迟含上游排队与推理，端点 PING 只量网络往返。
+	// 只有并列时才能判断"慢在我们这边，还是慢在模型那边"。
+	//
+	// 指针：`NULL` = 这次没测到（渠道不提供 PING、HEAD 超时、或老记录）。
+	// 写成 0 会让界面显示"0ms"，那是"极快"的意思，与"没测"相反。
+	PingMS *int `gorm:"column:ping_ms;type:integer" json:"pingMs"`
 	// Status 是归类后的状态：`ok` / `limited` / `auth` / `quota` / `error`。
 	//
 	// 单独一列而不是从 OK 推：失败的原因决定"要不要换号"，

@@ -39,11 +39,18 @@ type ChannelHealth struct {
 	// 一轮就是 2 条。界面用它说明"样本量"，不拿它冒充流量。
 	Probes      int64    `json:"probes"`
 	SuccessRate *float64 `json:"successRate"`
-	// AvgLatencyMs 是探活的端到端耗时。
+	// AvgLatencyMs 是探活的端到端耗时（对话延迟）。
 	//
 	// 不再有 AvgTtftMs：探活只关心"通不通、多久回来"，
 	// 上游不保证返回首字时间，留着那个字段只会让人以为它在测首字。
 	AvgLatencyMs *int `json:"avgLatencyMs"`
+	// AvgPingMs 是端点 PING 的平均往返（对上游 origin 的一次 HEAD）。
+	//
+	// 与 AvgLatencyMs 并列显示：一个是"模型多久开始回话"，一个是"主机多久回包"。
+	// 只有拆开，用户才能判断慢在我们这边还是上游那边。
+	//
+	// nil = 窗口内一次都没测到（渠道不提供 PING，或老记录还没这一列）。
+	AvgPingMs *int `json:"avgPingMs"`
 
 	// 最近若干次探活的状态（旧 → 新），用于卡片底部那条细条。
 	//
@@ -197,6 +204,7 @@ func (s *Store) attachChannelProbeStats(
 		       count(*),
 		       avg(CASE WHEN p.ok THEN 1.0 ELSE 0.0 END)::float8,
 		       avg(CASE WHEN p.ok THEN NULLIF(p.latency_ms, 0) END)::float8,
+		       avg(p.ping_ms)::float8,
 		       (SELECT max(last.checked_at) FROM channel_probes last
 		         WHERE last.channel_id = p.channel_id)
 		FROM channel_probes p
@@ -212,10 +220,10 @@ func (s *Store) attachChannelProbeStats(
 	for rows.Next() {
 		var channelID string
 		var probes int64
-		var successRate, avgLatency *float64
+		var successRate, avgLatency, avgPing *float64
 		var lastAt any
 
-		if err := rows.Scan(&channelID, &probes, &successRate, &avgLatency, &lastAt); err != nil {
+		if err := rows.Scan(&channelID, &probes, &successRate, &avgLatency, &avgPing, &lastAt); err != nil {
 			return fmt.Errorf("扫描分组探活失败: %w", err)
 		}
 
@@ -229,6 +237,16 @@ func (s *Store) attachChannelProbeStats(
 		item.Probes = probes
 		item.SuccessRate = successRate
 		item.AvgLatencyMs = roundToInt(avgLatency)
+		/*
+			PING **不按成功过滤**：它是网络往返，失败的那一次同样量到了网络状况
+			（超时本身就是最有信息量的结果）。但 `ping_ms` 为 NULL 的行
+			（没测到）会被 `avg()` 自动跳过，不需要额外的 WHERE。
+
+			注意与延迟的区别：上面那条 `CASE WHEN p.ok` 是刻意的 ——
+			失败请求的 `latency_ms` 通常是 0（连都没连上），混进平均会让
+			"对话延迟"看起来比实际快。
+		*/
+		item.AvgPingMs = roundToInt(avgPing)
 		formatted := formatTime(lastAt)
 		if formatted != "" {
 			item.LastProbeAt = &formatted

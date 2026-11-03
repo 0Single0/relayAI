@@ -362,6 +362,12 @@ impl ChannelAdapter for TraeChannel {
         }
     }
 
+    /// 端点 PING 打 Trae Remote 网关的 origin，而不是带 `/api/remote/v1` 的基址：
+    /// PING 要回答"这台主机在不在"，多加路径段只会让结果被业务路由影响。
+    fn endpoint_origin(&self, _account: &AccountSnapshot) -> Option<String> {
+        crate::gateway::transport::origin_of(&self.hosts.remote)
+    }
+
     async fn refresh(
         &self,
         client: &reqwest::Client,
