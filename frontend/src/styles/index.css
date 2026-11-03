@@ -122,6 +122,32 @@
     --warning: #f79009;
     --warning-foreground: #ffffff;
 
+    /*
+     * 渠道健康的 11 档色阶（green → yellow → red）。
+     *
+     * 色值与分档**照抄 sub2api** 的 `channel-monitor-v2`（RelayPulseMatrix.vue
+     * 的 `.health-score0..10` 与 `.score-legend`），因为那套色阶是为了
+     * "一排 60 格、一眼看出刚才抖没抖"调的：
+     *   · 绿段有 4 档（#16A34A → #A3E635），"好"也能分出深浅；
+     *   · 黄段 3 档（#FACC15 → #F59E0B），阈值在 80 分以下才进入；
+     *   · 红段 3 档（#F97316 → #EF4343），橙色过渡到红色而不是硬跳。
+     *
+     * 为什么不复用 --success / --warning：那两个是**语义色**（一个绿、一个橙），
+     * 只有 1 档，画不出细条需要的梯度；而且它们的用途是徽标/文字，
+     * 不是 2px 宽的格子。两套并存，各管一处。
+     */
+    --health-10: #16a34a;
+    --health-9: #22c55e;
+    --health-8: #4ade80;
+    --health-7: #a3e635;
+    --health-6: #facc15;
+    --health-5: #fbbf24;
+    --health-4: #f59e0b;
+    --health-3: #f97316;
+    --health-2: #fb7185;
+    --health-1: #f87171;
+    --health-0: #ef4343;
+
     /* 描边：borderColor.low / base / high */
     --border: #e8ebf0;
     --border-strong: #c4cbd7;
@@ -187,6 +213,22 @@
     --success-foreground: #111824;
     --warning: #fdb022;
     --warning-foreground: #111824;
+
+    /*
+     * 健康色阶在深色底上整体提亮一档：同样的 #16A34A 在 #1D2532 上偏暗，
+     * 细条会糊成一条黑边。只调红/绿两端，中间黄橙保持不变（它们在深色上足够亮）。
+     */
+    --health-10: #22c55e;
+    --health-9: #34d399;
+    --health-8: #6ee7b7;
+    --health-7: #bef264;
+    --health-6: #fde047;
+    --health-5: #fcd34d;
+    --health-4: #fbbf24;
+    --health-3: #fb923c;
+    --health-2: #fca5a5;
+    --health-1: #f87171;
+    --health-0: #f04438;
 
     --border: rgb(255 255 255 / 10%);
     --border-strong: rgb(255 255 255 / 18%);

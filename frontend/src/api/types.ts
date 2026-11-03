@@ -494,8 +494,19 @@ export type ChannelHealth = {
   probes: number;
   /** 窗口内的探活成功率（0–1）；没有探活记录时为 null。 */
   successRate: number | null;
-  /** 探活的平均端到端耗时。 */
+  /** 探活的平均端到端耗时（对话延迟：模型多久开始回话并把回复收完）。 */
   avgLatencyMs: number | null;
+  /**
+   * 窗口内端点 PING 的平均往返（对上游 origin 的一次 HEAD）。
+   *
+   * 与 `avgLatencyMs` **并列**而不是替代：那两个数回答不同问题 ——
+   * 对话延迟含上游排队与推理，端点 PING 只量网络往返。
+   * 只有拆开才分得清"慢在我们这边"还是"慢在模型那边"。
+   *
+   * `null` = 窗口内一次都没测到（渠道不提供 PING、或老记录还没这一列），
+   * 界面显示 `—`，不要补成 0（0ms 是"极快"的意思）。
+   */
+  avgPingMs: number | null;
   /**
    * 最近 60 次探活状态，旧 → 新，值原样来自 `channel_probes.status`
    * （`ok` / `limited` / `auth` / `quota` / `error`）。

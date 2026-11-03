@@ -1,8 +1,12 @@
-import { Clock3, Gauge, Radio, Timer } from "lucide-react";
 import { Link } from "react-router-dom";
 import { StatusBadge, type StatusTone } from "@/components/common/StatusBadge";
 import { StatusStrip } from "@/components/common/StatusStrip";
 import type { ChannelHealth } from "@/api/types";
+import {
+  healthLevelOf,
+  healthScoreOf,
+  healthTextClassOf,
+} from "@/lib/channelHealth";
 import { cn } from "@/lib/utils";
 
 const ADAPTER_LABEL: Record<string, string> = {
@@ -52,6 +56,10 @@ const formatAgo = (iso: string | null) => {
  * 顺序很重要：**先看有没有探过**。没有探活记录的分组成功率是 null，
  * 不能判成"异常"——没配探活模型的分组本来就不会有记录，
  * 把它标红会让告警失去意义。
+ *
+ * 阈值口径见 `lib/channelHealth.ts`：**按错误率线性打分**，80 / 50 分分档。
+ * 早先这里是 `< 0.99` 判「波动」—— 一次 5xx 就把 7 天窗口压到 99% 以下，
+ * 整片卡片无差别发黄，颜色不再传递信息。
  */
 const healthOf = (channel: ChannelHealth): { tone: StatusTone; label: string } => {
   if (!channel.enabled) {
@@ -63,35 +71,39 @@ const healthOf = (channel: ChannelHealth): { tone: StatusTone; label: string } =
   if (channel.readyAccounts === 0) {
     return { tone: "danger", label: "无可用账号" };
   }
-  if (channel.probes === 0 || channel.successRate === null) {
+  const score = healthScoreOf(channel.successRate);
+  if (channel.probes === 0 || score === null) {
     return { tone: "info", label: "待观测" };
   }
-  if (channel.successRate < 0.9) {
-    return { tone: "danger", label: "降级" };
+  switch (healthLevelOf(score)) {
+    case "healthy":
+      return { tone: "success", label: "正常" };
+    case "warning":
+      return { tone: "warning", label: "波动" };
+    default:
+      return { tone: "danger", label: "降级" };
   }
-  if (channel.successRate < 0.99) {
-    return { tone: "warning", label: "波动" };
-  }
-  return { tone: "success", label: "正常" };
 };
 
+/**
+ * 一格指标（只有标签和值，没有图标）。
+ *
+ * 为什么去掉图标：两格并排时，「对话延迟」和「端点 PING」的关系是
+ * **同一件事的两面**（模型 vs 网络），各配一个时钟/秒表只会让人以为
+ * 它们是两类不同的数据。标签本身就是最好的说明。
+ */
 const Metric = ({
-  icon: Icon,
   label,
   value,
   title,
 }: {
-  icon: typeof Timer;
   label: string;
   value: string;
   title?: string;
 }) => (
   <div className="flex min-w-0 flex-col gap-0.5" title={title}>
-    <span className="flex items-center gap-1 text-[11px] text-muted-foreground">
-      <Icon className="size-3" aria-hidden="true" />
-      {label}
-    </span>
-    <span className="truncate text-sm font-medium tabular-nums">{value}</span>
+    <span className="truncate text-[11px] text-muted-foreground">{label}</span>
+    <span className="truncate font-mono text-sm font-medium tabular-nums">{value}</span>
   </div>
 );
 
@@ -104,7 +116,8 @@ export type ChannelHealthCardProps = {
 /**
  * 分组状态卡片。
  *
- * 信息层级（自上而下）：身份 → 状态判定 → 探活指标 → 探活可用性 → 最近探活。
+ * 信息层级（自上而下）：身份 + 探活模型 → 状态判定 → 两个延迟指标
+ * → 可用性百分比 → 状态细条 → 当前失败原因。
  * 这样扫视一张卡片时先回答"它能用吗"，再回答"探得怎么样"，最后才是"刚才稳不稳"。
  *
  * 全部数字都来自定时探活，与真实请求用量无关 —— 这一点必须在文案上说清，
@@ -126,6 +139,7 @@ export const ChannelHealthCard = ({ channel, days }: ChannelHealthCardProps) => 
       : channel.probeModel
         ? [channel.probeModel]
         : [];
+  const score = healthScoreOf(channel.successRate);
 
   return (
     <article
@@ -140,7 +154,17 @@ export const ChannelHealthCard = ({ channel, days }: ChannelHealthCardProps) => 
         "hover:border-border-strong hover:shadow-[var(--shadow-card-hover)]",
       )}
     >
-      {/* 身份 + 状态。标题可点：底部"详情"按钮已去掉，入口挪到这里。 */}
+      {/*
+        身份 + 探活模型 + 状态。
+
+        探活模型原来单独占一行（带图标和"探活模型"四个字），
+        现在紧跟在 ID 后面，用 `·` 分隔：它是身份的属性
+        （"这个分组是用哪条模型证明可用的"），不是一项指标，
+        单独一行给了它过高的视觉权重。
+
+        标签文字与图标都去掉了。悬停时的 `title` 仍然说明
+        "每轮探几个模型"，信息没丢，只是不再占用版面。
+      */}
       <header className="flex items-start gap-2">
         <div className="min-w-0 flex-1">
           <Link
@@ -153,21 +177,16 @@ export const ChannelHealthCard = ({ channel, days }: ChannelHealthCardProps) => 
             <span>{ADAPTER_LABEL[channel.adapter] ?? channel.adapter}</span>
             <span aria-hidden="true">·</span>
             <span className="truncate font-mono">{channel.id}</span>
-          </p>
-          {/*
-            探活模型：让人知道"这个绿灯是用哪个模型测出来的"。
-
-            空 = **真的没配**（不探活），必须说成"未配置"而不是"自动"：
-            早先这里写"自动（免费优先）"，但定时探活的口径是"没配就不探" ——
-            文案与行为反了，用户看着有值、其实一条探活都没跑。
-          */}
-          <p className="mt-1 flex items-start gap-1 text-[11px] text-muted-foreground">
-            <Gauge className="mt-0.5 size-3 shrink-0" aria-hidden="true" />
-            <span className="shrink-0">探活模型</span>
+            <span aria-hidden="true">·</span>
+            {/*
+              空 = **真的没配**（不探活），必须说成"未配置"而不是"自动"：
+              早先这里写"自动（免费优先）"，但定时探活的口径是"没配就不探" ——
+              文案与行为反了，用户看着有值、其实一条探活都没跑。
+            */}
             <span
               className={cn(
-                "min-w-0 break-all font-mono",
-                probeModels.length > 0 ? "text-foreground" : "text-muted-foreground",
+                "min-w-0 font-mono",
+                probeModels.length > 0 ? "text-foreground" : "text-muted-foreground/70",
               )}
               title={
                 probeModels.length > 0
@@ -175,26 +194,35 @@ export const ChannelHealthCard = ({ channel, days }: ChannelHealthCardProps) => 
                   : "未配置：这个分组不做定时探活（在「分组管理 → 编辑」里选）"
               }
             >
-              {probeModels.length > 0 ? probeModels.join("、") : "未配置（不探活）"}
+              {probeModels.length > 0 ? probeModels.join("、") : "未配置探活"}
             </span>
           </p>
         </div>
         <StatusBadge tone={health.tone} label={health.label} />
       </header>
 
-      {/* 探活指标：耗时与新鲜度 */}
+      {/*
+        两个延迟指标。
+
+        文案是**对话延迟**与**端点 PING**（对齐 sub2api 的 dashboard 词表）：
+        「探活耗时」把"耗时"这个词浪费在了一个具体口径上，让人以为它是
+        整轮探活的总时间；「最近探活」其实是"距上次探活多久"，
+        写着像一项耗时指标，读起来却是时间点。
+      */}
       <div className="grid grid-cols-2 gap-2 rounded-lg bg-muted/50 px-3 py-2">
         <Metric
-          icon={Clock3}
-          label="探活耗时"
+          label="对话延迟"
           value={formatMs(channel.avgLatencyMs)}
-          title="窗口内成功探活的平均端到端耗时（不含 0 毫秒的失败记录）"
+          title="窗口内成功探活的平均端到端耗时：发一句 hi 到收到完整回复（不含 0 毫秒的失败记录）"
         />
         <Metric
-          icon={Timer}
-          label="最近探活"
-          value={formatAgo(channel.lastProbeAt)}
-          title={channel.lastProbeAt ?? "还没有任何探活记录"}
+          label="端点 PING"
+          value={formatMs(channel.avgPingMs)}
+          title={
+            channel.avgPingMs === null
+              ? "没有测到端点往返：该渠道不提供 PING，或窗口内所有 HEAD 都失败"
+              : "对上游 origin 发一次 HEAD 的往返耗时，只量网络，不含模型推理"
+          }
         />
       </div>
 
@@ -204,16 +232,15 @@ export const ChannelHealthCard = ({ channel, days }: ChannelHealthCardProps) => 
           探活可用性 · {days} 天
           <span className="ml-1 text-[11px]">（{channel.probes} 次）</span>
         </span>
+        {/*
+          百分比的颜色走 11 档色阶（`healthTextClassOf`），与细条同一套：
+          早先固定用 --success / --warning / --destructive 三支，
+          99% 和 99.9% 显示成同一个绿，看不出差别。
+        */}
         <span
           className={cn(
             "text-2xl leading-8 font-semibold tabular-nums",
-            channel.successRate === null
-              ? "text-muted-foreground"
-              : channel.successRate >= 0.99
-                ? "text-success"
-                : channel.successRate >= 0.9
-                  ? "text-warning"
-                  : "text-destructive",
+            healthTextClassOf(score),
           )}
         >
           {formatPercent(channel.successRate)}
@@ -231,7 +258,6 @@ export const ChannelHealthCard = ({ channel, days }: ChannelHealthCardProps) => 
         <StatusStrip statuses={channel.recent} />
       ) : (
         <p className="rounded-md bg-muted/50 px-2 py-1.5 text-[11px] leading-4 text-muted-foreground">
-          <Radio className="mr-1 inline size-3" aria-hidden="true" />
           还没有探活记录：在「分组管理 → 编辑」里选好探活模型，定时探活下一轮就会有数据。
         </p>
       )}
@@ -249,10 +275,7 @@ export const ChannelHealthCard = ({ channel, days }: ChannelHealthCardProps) => 
           className="rounded-md bg-destructive/5 px-2 py-1.5 text-destructive"
           title={channel.lastError}
         >
-          <p className="line-clamp-2 text-[11px] leading-4">
-            <Radio className="mr-1 inline size-3" aria-hidden="true" />
-            {channel.lastError}
-          </p>
+          <p className="line-clamp-2 text-[11px] leading-4">{channel.lastError}</p>
           {channel.lastErrorAt ? (
             <p
               className="mt-0.5 text-[10px] leading-3 text-destructive/70"
