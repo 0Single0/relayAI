@@ -55,6 +55,7 @@ pub fn estimate_completion(prompt_tokens: u64, produced: &str) -> Usage {
         completion_tokens,
         reasoning_tokens: 0,
         cached_tokens: 0,
+        cache_creation_tokens: 0,
         total_tokens: prompt_tokens + completion_tokens,
         credit: None,
     }

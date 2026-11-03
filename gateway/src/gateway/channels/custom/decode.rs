@@ -120,6 +120,7 @@ fn anthropic_usage(usage: &Value) -> Usage {
         completion_tokens: completion,
         reasoning_tokens: 0,
         cached_tokens: cached,
+        cache_creation_tokens: number("cache_creation_input_tokens"),
         total_tokens: prompt + completion,
         credit: None,
     }
@@ -268,6 +269,7 @@ fn parse_responses_usage(usage: &Value) -> Usage {
             .and_then(Value::as_u64)
             .unwrap_or(0),
         cached_tokens: cached,
+        cache_creation_tokens: 0,
         total_tokens: number("total_tokens").max(prompt + completion),
         credit: None,
     }

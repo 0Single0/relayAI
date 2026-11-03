@@ -328,6 +328,12 @@ pub trait ChannelAdapter: Send + Sync {
     /// 一帧上游 SSE → 若干 CIR 事件。未知帧返回空 vec（不因为多一个字段就中断整条流）。
     fn parse_event(&self, frame: &str) -> Vec<CanonicalEvent>;
 
+    /// 请求独享的流归一化：把上游分散在多帧里的 usage 补成完整快照。
+    /// 状态必须留在返回的流里，不能放到多个请求共享的适配器实例上。
+    fn normalize_stream(&self, frames: FrameStream) -> FrameStream {
+        frames
+    }
+
     /// 把上游状态码/错误码翻译成统一语义。调度器只认 [`GatewayError::kind`] 与 `scope`。
     ///
     /// `upstream_model` 是这次实际发出去的模型名 —— 调度器在构建报文前已经把
@@ -354,7 +360,10 @@ pub trait ChannelAdapter: Send + Sync {
     ) -> Result<FrameStream, GatewayError> {
         let upstream = self.build_chat_request(account, request)?;
         match transport::send(&upstream, client).await {
-            Ok(response) => Ok(transport::frame_stream(response, STREAM_IDLE_TIMEOUT)),
+            Ok(response) => Ok(self.normalize_stream(transport::frame_stream(
+                response,
+                STREAM_IDLE_TIMEOUT,
+            ))),
             Err(transport::UpstreamFailure { status: 0, body }) => {
                 Err(GatewayError::network(body))
             }

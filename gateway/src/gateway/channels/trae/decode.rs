@@ -511,6 +511,7 @@ fn parse_usage(value: &Value) -> Option<Usage> {
         completion_tokens: completion,
         reasoning_tokens: reasoning,
         cached_tokens: cached,
+        cache_creation_tokens: 0,
         total_tokens: total,
         credit: value.get("credit").and_then(Value::as_f64),
     })

@@ -27,11 +27,12 @@ pub fn event_frame(name: &str, payload: &Value) -> Bytes {
 
 pub fn usage_json(usage: &Usage) -> Value {
     json!({
-        "input_tokens": usage.prompt_tokens,
+        "input_tokens": usage.prompt_tokens
+            .saturating_sub(usage.cached_tokens)
+            .saturating_sub(usage.cache_creation_tokens),
         "output_tokens": usage.completion_tokens,
         "cache_read_input_tokens": usage.cached_tokens,
-        // 上游没有"缓存写入"口径，恒为 0（给出字段，客户端就不会报缺字段）。
-        "cache_creation_input_tokens": 0,
+        "cache_creation_input_tokens": usage.cache_creation_tokens,
     })
 }
 
@@ -43,8 +44,7 @@ struct OpenTool {
 pub struct StreamEncoder {
     message_id: String,
     model: String,
-    input_tokens: u64,
-    output_tokens: u64,
+    usage: Usage,
     content_blocks: u32,
     text_block: Option<u32>,
     thinking_block: Option<u32>,
@@ -56,8 +56,10 @@ impl StreamEncoder {
         Self {
             message_id: message_id.into(),
             model: model.into(),
-            input_tokens,
-            output_tokens: 0,
+            usage: Usage {
+                prompt_tokens: input_tokens,
+                ..Usage::default()
+            },
             content_blocks: 0,
             text_block: None,
             thinking_block: None,
@@ -79,7 +81,7 @@ impl StreamEncoder {
                     "content": [],
                     "stop_reason": null,
                     "stop_sequence": null,
-                    "usage": { "input_tokens": self.input_tokens, "output_tokens": 0 },
+                    "usage": usage_json(&self.usage),
                 }
             }),
         )]
@@ -165,8 +167,8 @@ impl StreamEncoder {
                 frames
             }
             CanonicalEvent::Usage(usage) => {
-                self.input_tokens = self.input_tokens.max(usage.prompt_tokens);
-                self.output_tokens = self.output_tokens.max(usage.completion_tokens);
+                // 上游实际值覆盖初始估算，包括比估算小或显式为 0 的值。
+                self.usage = usage.clone();
                 Vec::new()
             }
             CanonicalEvent::Error { message } => vec![event_frame(
@@ -192,7 +194,7 @@ impl StreamEncoder {
             &json!({
                 "type": "message_delta",
                 "delta": { "stop_reason": stop_reason(finish), "stop_sequence": null },
-                "usage": { "output_tokens": self.output_tokens },
+                "usage": usage_json(&self.usage),
             }),
         ));
         frames.push(event_frame(
@@ -353,6 +355,25 @@ mod tests {
     }
 
     #[test]
+    fn streaming_preserves_openai_cache_usage_and_replaces_estimates() {
+        let mut encoder = StreamEncoder::new("msg", "model", 172_200);
+        encoder.push(&CanonicalEvent::Usage(Usage {
+            prompt_tokens: 10_000,
+            cached_tokens: 8192,
+            completion_tokens: 10,
+            total_tokens: 10_010,
+            ..Usage::default()
+        }));
+        let frames = encoder.finish("stop");
+        let frame = std::str::from_utf8(&frames[0]).unwrap();
+        let delta: Value =
+            serde_json::from_str(frame.split_once("data: ").unwrap().1.trim()).unwrap();
+        assert_eq!(delta["usage"]["input_tokens"], 1808);
+        assert_eq!(delta["usage"]["cache_read_input_tokens"], 8192);
+        assert_eq!(delta["usage"]["output_tokens"], 10);
+    }
+
+    #[test]
     fn non_streaming_fold_builds_message_with_tool_use_and_usage() {
         let events = vec![
             CanonicalEvent::Reasoning {
@@ -383,7 +404,7 @@ mod tests {
         assert_eq!(message["content"][2]["type"], "tool_use");
         assert_eq!(message["content"][2]["input"]["city"], "上海");
         assert_eq!(message["stop_reason"], "tool_use");
-        assert_eq!(message["usage"]["input_tokens"], 12);
+        assert_eq!(message["usage"]["input_tokens"], 4);
         assert_eq!(message["usage"]["cache_read_input_tokens"], 8);
     }
 }

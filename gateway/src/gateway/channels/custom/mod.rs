@@ -22,6 +22,7 @@ pub use catalog::fetch_models;
 mod decode;
 mod encode;
 mod model_options;
+mod usage_stream;
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -32,7 +33,7 @@ use crate::gateway::{
     channels::{openai_compat, AccountSnapshot, ChannelAdapter, Credential, UpstreamModel},
     errors::GatewayError,
     protocol::cir::{CanonicalEvent, CanonicalRequest},
-    transport::UpstreamRequest,
+    transport::{FrameStream, UpstreamRequest},
 };
 
 use catalog::configured_models;
@@ -405,6 +406,10 @@ impl ChannelAdapter for CustomChannel {
             UpstreamProtocol::Responses => parse_responses_event(frame),
             UpstreamProtocol::Anthropic => parse_anthropic_event(frame),
         }
+    }
+
+    fn normalize_stream(&self, frames: FrameStream) -> FrameStream {
+        usage_stream::normalize_anthropic_usage(frames)
     }
 
     fn classify_error(&self, status: u16, body: &str, _upstream_model: &str) -> GatewayError {

@@ -208,6 +208,7 @@ pub fn parse_usage(usage: &Value) -> Option<Usage> {
         completion_tokens: number(&["completion_tokens"]),
         reasoning_tokens: number(&["completion_tokens_details", "reasoning_tokens"]),
         cached_tokens: cached,
+        cache_creation_tokens: 0,
         total_tokens: number(&["total_tokens"]),
         credit: usage.get("credit").and_then(Value::as_f64),
     })

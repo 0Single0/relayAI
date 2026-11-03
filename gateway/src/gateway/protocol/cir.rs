@@ -159,6 +159,9 @@ pub struct Usage {
     pub completion_tokens: u64,
     pub reasoning_tokens: u64,
     pub cached_tokens: u64,
+    /// 缓存写入属于输入的一部分，与缓存读取分开，供 Messages 协议还原 usage。
+    #[serde(default)]
+    pub cache_creation_tokens: u64,
     pub total_tokens: u64,
     /// 上游积分口径，与 token 并列返回。
     pub credit: Option<f64>,
