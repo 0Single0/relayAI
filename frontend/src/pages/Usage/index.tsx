@@ -283,7 +283,7 @@ export const UsagePage = () => {
         · 拆开后每列都要占宽度，12 列把表格挤到必须横向滚动；
         · 三档本来是一组数（缓存是输入的一部分、合计 = 输入 + 输出），
           竖排在一起反而更容易横向对比，也省出空间给端点/类型。
-      用 ↓ ↑ ⛁ 三个符号区分输入/输出/缓存，比纯文字更省空间。
+      上行显示未命中缓存的输入与输出；下行单独显示缓存命中输入。
     */
     {
       key: "tokens",
@@ -295,21 +295,24 @@ export const UsagePage = () => {
         if (log.isRejection) {
           return <span className="text-[13px] text-muted-foreground">—</span>;
         }
+        const uncachedPromptTokens = Math.max(log.promptTokens - log.cachedTokens, 0);
         return (
           <div className="flex flex-col gap-0.5 text-[13px] leading-4 tabular-nums">
             <span className="flex items-center gap-2">
-              {/* 输入偏冷、输出偏暖：这两项相加就是总量，靠颜色区分比靠箭头更省神。 */}
-              <span className="text-chart-1">
-                ↓ {compactNumber(log.promptTokens)}
+              <span
+                className="text-chart-1"
+                title="未命中缓存的输入 Token（输入总量减缓存命中）"
+              >
+                ↓ {compactNumber(uncachedPromptTokens)}
               </span>
-              <span className="text-chart-2">
+              <span className="text-chart-2" title="输出 Token">
                 ↑ {compactNumber(log.completionTokens)}
               </span>
             </span>
             <span
               className={cn(
                 "flex items-center gap-1 font-medium",
-                log.cachedTokens > 0 ? "text-success" : "text-foreground",
+                log.cachedTokens > 0 ? "text-success" : "text-muted-foreground",
               )}
               title={
                 log.cachedTokens > 0
@@ -317,10 +320,10 @@ export const UsagePage = () => {
                       (log.cachedTokens / Math.max(log.promptTokens, 1)) *
                       100
                     ).toFixed(0)}%`
-                  : "没有命中缓存"
+                  : "上游未报告缓存命中 Token；不一定代表缓存未命中"
               }
             >
-              ⛁ {compactNumber(log.totalTokens)}
+              ⛁ {compactNumber(log.cachedTokens)}
               {log.usageEstimated ? (
                 <span className="text-[10px] text-warning" title="上游没给 usage，这里是估算值">
                   ≈

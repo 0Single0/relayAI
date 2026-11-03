@@ -62,6 +62,7 @@ pub(crate) fn build_openai_body(request: &CanonicalRequest) -> Value {
         body["max_tokens"] = json!(max_tokens);
     }
     body["stream"] = json!(true);
+    body["stream_options"] = json!({ "include_usage": true });
     body
 }
 

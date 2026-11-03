@@ -98,6 +98,7 @@ fn openai_body_rebuilds_messages_and_drops_client_system_field() {
     assert!(body.get("system").is_none());
     // 上游只支持流式：强制打开。
     assert_eq!(body["stream"], true);
+    assert_eq!(body["stream_options"]["include_usage"], true);
     // tool 结果保留 call id。
     assert_eq!(body["messages"][3]["tool_call_id"], "call_1");
 }
