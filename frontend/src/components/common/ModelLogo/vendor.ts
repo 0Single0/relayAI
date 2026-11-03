@@ -9,11 +9,12 @@
  * （外网 CDN 在国内不稳定），页面上会留一排空白方框 ——
  * 那比没有 logo 更难看。本地文件没有这个问题。
  *
- * 素材来自 Simple Icons 与 thesvg（两者都是各厂商官方 SVG 的汇总），
+ * 素材来自 Simple Icons / thesvg / lobe-icons（都是各厂商官方 SVG 的汇总），
  * 只保留实际用到的几个。
  * **拿不到官方图标的厂商**用中文/字母标记，不伪造图形：
- *   · 腾讯混元 / 字节 / 百度 —— Simple Icons 与 thesvg 都未收录，用中文单字；
- *   · OpenAI —— 商标已从 Simple Icons 移除（404），用 `AI` 字母。
+ *   · 腾讯混元 / 字节 / 百度 —— Simple Icons 与 thesvg 都未收录，用中文单字。
+ *   · OpenAI —— Simple Icons 已下架它的商标（404），改从 lobe-icons 取官方图形，
+ *     因此这里不再用 `AI` 字母。
  * 编一个"看起来像官方"的图标比没有更糟：那是在冒充品牌。
  */
 
@@ -39,11 +40,11 @@ export type Vendor = {
 const VENDORS: Array<{ match: RegExp; vendor: Vendor }> = [
   {
     match: /^(gpt|chatgpt|text-davinci|davinci)/i,
-    vendor: { label: "OpenAI", slug: "", mark: "AI", className: "bg-emerald-600/15 text-emerald-700" },
+    vendor: { label: "OpenAI", slug: "openai", mark: "AI", className: "bg-emerald-600/15 text-emerald-700" },
   },
   {
     match: /^o[134](-|$)/i,
-    vendor: { label: "OpenAI", slug: "", mark: "AI", className: "bg-emerald-600/15 text-emerald-700" },
+    vendor: { label: "OpenAI", slug: "openai", mark: "AI", className: "bg-emerald-600/15 text-emerald-700" },
   },
   {
     match: /^claude/i,

@@ -34,8 +34,8 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { KeyFormDialog } from "@/pages/Keys/components/KeyFormDialog";
+import { CcSwitchImportDialog } from "@/pages/Keys/components/CcSwitchImportDialog";
 import { getPublicConfig } from "@/api/system/publicConfig";
-import { importToCcSwitch } from "@/lib/ccswitch";
 import { toast } from "@/components/common/Toast/store";
 import { compactNumber } from "@/lib/charts";
 import { cn } from "@/lib/utils";
@@ -615,126 +615,12 @@ export const KeysPage = () => {
       </Dialog>
 
       {/* CC Switch 导入：先选客户端类型，再唤起协议 */}
-      <Dialog
+      <CcSwitchImportDialog
         open={ccsTarget !== null}
+        gatewayBaseUrl={gatewayBaseUrl}
+        apiKey={ccsTarget?.plaintext ?? ""}
         onOpenChange={(next) => !next && setCcsTarget(null)}
-      >
-        <DialogContent className="max-w-md">
-          <DialogHeader>
-            <DialogTitle>导入到 CC Switch</DialogTitle>
-            <DialogDescription>
-              选择要导入到哪个客户端。CC Switch 会收到一个
-              <code className="mx-1 rounded bg-muted px-1 font-mono text-[11px]">
-                ccswitch://
-              </code>
-              链接并自动建好 provider。
-            </DialogDescription>
-          </DialogHeader>
-
-          <div className="flex flex-col gap-3">
-            <div className="flex flex-col gap-1">
-              <span className="text-xs font-medium">网关地址</span>
-              <code className="rounded bg-muted px-2 py-1.5 font-mono text-xs">
-                {gatewayBaseUrl || "地址未知（后端未配置 GATEWAY_BASE_URL）"}
-              </code>
-              <p className="text-[11px] text-muted-foreground">
-                客户端使用此地址接入，导入配置也会使用相同地址。
-              </p>
-            </div>
-
-            <div className="grid grid-cols-3 gap-2">
-              {(
-                [
-                  {
-                    type: "claude" as const,
-                    label: "Claude Code",
-                    hint: "app=claude",
-                    icon: "/logos/anthropic.svg",
-                  },
-                  {
-                    type: "codex" as const,
-                    label: "Codex CLI",
-                    hint: "app=codex",
-                    // OpenAI 商标已从图标源下架（见 ModelLogo/vendor.ts 的记录），
-                    // 按同一约定用 "AI" 字母标记，不伪造图形。
-                    icon: null,
-                    mark: "AI",
-                    markClass: "bg-emerald-600/15 text-emerald-700",
-                  },
-                  {
-                    type: "gemini" as const,
-                    label: "Gemini CLI",
-                    hint: "app=gemini",
-                    icon: "/logos/googlegemini.svg",
-                  },
-                ]
-              ).map((option) => (
-                <Button
-                  key={option.type}
-                  variant="outline"
-                  size="sm"
-                  disabled={!gatewayBaseUrl}
-                  onClick={() => {
-                    const target = ccsTarget;
-                    setCcsTarget(null);
-                    if (!target) {
-                      return;
-                    }
-                    const ok = importToCcSwitch({
-                      baseUrl: gatewayBaseUrl,
-                      providerName: "relayAI",
-                      apiKey: target.plaintext ?? "",
-                      clientType: option.type,
-                    });
-                    if (ok) {
-                      toast.success("已发送到 CC Switch", "请在客户端里确认新增的 provider");
-                    } else {
-                      toast.info(
-                        "已尝试唤起 CC Switch",
-                        "若没有反应，说明本机没有安装或未注册 ccswitch:// 协议",
-                      );
-                    }
-                  }}
-                  className="flex h-auto flex-col items-center gap-1 py-2.5"
-                >
-                  {option.icon ? (
-                    <img
-                      src={option.icon}
-                      alt=""
-                      aria-hidden="true"
-                      className="size-5 object-contain"
-                    />
-                  ) : (
-                    <span
-                      aria-hidden="true"
-                      className={cn(
-                        "inline-flex size-5 items-center justify-center rounded-md text-[9px] font-semibold",
-                        option.markClass,
-                      )}
-                    >
-                      {option.mark}
-                    </span>
-                  )}
-                  <span className="text-xs font-medium">{option.label}</span>
-                  <span className="text-[11px] text-muted-foreground">{option.hint}</span>
-                </Button>
-              ))}
-            </div>
-
-            {!gatewayBaseUrl ? (
-              <p className="rounded-md border border-warning/30 bg-warning/10 px-3 py-2 text-[11px] text-warning">
-                拿不到网关地址，无法生成导入链接。请确认后端设置了 GATEWAY_BASE_URL。
-              </p>
-            ) : null}
-          </div>
-
-          <DialogFooter>
-            <Button variant="outline" size="sm" onClick={() => setCcsTarget(null)}>
-              取消
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      />
 
       {/* 删除确认 */}
       <Dialog
