@@ -176,9 +176,7 @@ impl AffinityStore {
             self.evict(&mut entries, now);
         }
         let stored = Binding {
-            expires_at_ms: binding
-                .expires_at_ms
-                .max(now.saturating_add(self.ttl_ms())),
+            expires_at_ms: binding.expires_at_ms.max(now.saturating_add(self.ttl_ms())),
             ..binding
         };
         entries.insert(key, stored.clone());
@@ -224,7 +222,11 @@ impl AffinityStore {
     }
 
     pub fn stats(&self) -> serde_json::Value {
-        let count = self.entries.read().map(|entries| entries.len()).unwrap_or(0);
+        let count = self
+            .entries
+            .read()
+            .map(|entries| entries.len())
+            .unwrap_or(0);
         let hits = self.hits.load(Ordering::Relaxed);
         let lookups = self.lookups.load(Ordering::Relaxed);
         let rate = if lookups > 0 {
@@ -267,10 +269,7 @@ impl AffinityStore {
             .map(|(key, binding)| (binding.expires_at_ms, key.clone()))
             .collect();
         deadlines.sort();
-        for (_, key) in deadlines
-            .into_iter()
-            .take(entries.len() / 10 + 1)
-        {
+        for (_, key) in deadlines.into_iter().take(entries.len() / 10 + 1) {
             entries.remove(&key);
         }
     }
@@ -375,7 +374,8 @@ mod tests {
     #[test]
     fn explicit_session_key_is_tried_first_and_hits() {
         let store = store();
-        let keys = AffinityStore::candidate_keys("open", "glm-5.3", &request(Some("conv-1"), &["你好"]));
+        let keys =
+            AffinityStore::candidate_keys("open", "glm-5.3", &request(Some("conv-1"), &["你好"]));
         assert!(keys[0].starts_with("s:open:glm-5.3:conv-1"));
         let now = now_ms();
         store.bind(keys[0].clone(), binding("wb-cn", "u1", "glm-5.3"), now);
@@ -396,27 +396,65 @@ mod tests {
         store.bind(prefix_key.clone(), binding("wb-cn", "u1", "glm-5.3"), now);
 
         // 会话续写：多了一条消息，旧前缀键仍然在候选里，所以还能命中。
-        let continued = AffinityStore::candidate_keys(
-            "open",
-            "glm-5.3",
-            &request(None, &["第一轮", "第二轮"]),
-        );
+        let continued =
+            AffinityStore::candidate_keys("open", "glm-5.3", &request(None, &["第一轮", "第二轮"]));
         let (key, _) = store.lookup(&continued, now).expect("续写仍应命中旧绑定");
         assert_eq!(key, prefix_key);
+    }
+
+    #[test]
+    fn rolling_content_binding_survives_a_conversation_longer_than_lookback() {
+        let store = store();
+        let now = now_ms();
+        let binding = binding("wb-cn", "u1", "glm-5.3");
+        let mut texts = Vec::new();
+        let mut previous_key: Option<String> = None;
+
+        for index in 0..(LOOKBACK_POSITIONS + 10) {
+            texts.push(format!("第 {index} 轮"));
+            let request_texts: Vec<&str> = texts.iter().map(String::as_str).collect();
+            let keys =
+                AffinityStore::candidate_keys("open", "glm-5.3", &request(None, &request_texts));
+
+            if let Some(previous_key) = previous_key.as_ref() {
+                let (hit_key, hit) = store
+                    .lookup(&keys, now)
+                    .expect("每轮前缀都应能命中上一轮滚动的绑定");
+                assert_eq!(&hit_key, previous_key);
+                assert_eq!(hit.uid, "u1");
+            }
+
+            let latest_key = keys.first().expect("请求含文本消息").clone();
+            store.bind(latest_key.clone(), binding.clone(), now);
+            if let Some(previous_key) = previous_key.replace(latest_key.clone()) {
+                if previous_key != latest_key {
+                    store.clear(&previous_key);
+                }
+            }
+        }
     }
 
     #[test]
     fn different_scope_or_model_never_shares_a_binding() {
         let store = store();
         let now = now_ms();
-        let keys = AffinityStore::candidate_keys("key-a", "glm-5.3", &request(Some("conv-1"), &["你好"]));
+        let keys =
+            AffinityStore::candidate_keys("key-a", "glm-5.3", &request(Some("conv-1"), &["你好"]));
         store.bind(keys[0].clone(), binding("wb-cn", "u1", "glm-5.3"), now);
 
-        let other_scope = AffinityStore::candidate_keys("key-b", "glm-5.3", &request(Some("conv-1"), &["你好"]));
-        assert!(store.lookup(&other_scope, now).is_none(), "不同 API Key 不该共享绑定");
+        let other_scope =
+            AffinityStore::candidate_keys("key-b", "glm-5.3", &request(Some("conv-1"), &["你好"]));
+        assert!(
+            store.lookup(&other_scope, now).is_none(),
+            "不同 API Key 不该共享绑定"
+        );
 
-        let other_model = AffinityStore::candidate_keys("key-a", "hy3", &request(Some("conv-1"), &["你好"]));
-        assert!(store.lookup(&other_model, now).is_none(), "不同模型不该共享绑定");
+        let other_model =
+            AffinityStore::candidate_keys("key-a", "hy3", &request(Some("conv-1"), &["你好"]));
+        assert!(
+            store.lookup(&other_model, now).is_none(),
+            "不同模型不该共享绑定"
+        );
     }
 
     #[test]
@@ -443,7 +481,8 @@ mod tests {
             enabled: false,
             ..AffinityConfig::default()
         });
-        let keys = AffinityStore::candidate_keys("open", "glm-5.3", &request(Some("conv-1"), &["你好"]));
+        let keys =
+            AffinityStore::candidate_keys("open", "glm-5.3", &request(Some("conv-1"), &["你好"]));
         store.bind(keys[0].clone(), binding("wb-cn", "u1", "glm-5.3"), now_ms());
         assert!(store.lookup(&keys, now_ms()).is_none());
         assert_eq!(store.stats()["mode"], "off");

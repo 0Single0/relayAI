@@ -126,8 +126,12 @@ pub async fn open_chat_session(
     let keys = AffinityStore::candidate_keys(&scope, &request.model, request);
     let mut hint: Option<AccountKey> = None;
     let mut affinity_key: Option<String> = None;
+    let mut affinity_binding: Option<Binding> = None;
     let mut planned: Option<Candidate> = None;
     let mut via_affinity = false;
+    // Keep a healthy binding across one-request capacity spillovers. The request
+    // may use another account, but that should not migrate the whole session.
+    let mut preserve_affinity = false;
 
     if state.affinity.enabled() {
         if let Some((key, binding)) = state.affinity.lookup(&keys, now_ms()) {
@@ -139,13 +143,17 @@ pub async fn open_chat_session(
                 if candidate
                     .account
                     .is_ready(&candidate.route.upstream_model, now_ms())
-                    && !candidate.account.inflight_full()
                 {
                     affinity_key = Some(key.clone());
-                    planned = Some(candidate);
+                    affinity_binding = Some(binding.clone());
+                    if candidate.account.inflight_full() {
+                        preserve_affinity = state.affinity.mode() == AffinityMode::Prefer;
+                    } else {
+                        planned = Some(candidate);
+                    }
                 }
             }
-            if planned.is_none() {
+            if planned.is_none() && !preserve_affinity {
                 if state.affinity.mode() == AffinityMode::Strict {
                     return Err(GatewayError::no_account(
                         "会话绑定当前不可用（strict 模式：宁可直接失败，也不换号重写缓存）",
@@ -186,7 +194,15 @@ pub async fn open_chat_session(
                         via_affinity = true;
                         (candidate, guard)
                     }
-                    None => continue,
+                    None => {
+                        if state.affinity.mode() == AffinityMode::Strict {
+                            return Err(GatewayError::no_account(
+                                "会话绑定账号并发已满（strict 模式：宁可直接失败，也不换号重写缓存）",
+                            ));
+                        }
+                        preserve_affinity = true;
+                        continue;
+                    }
                 }
             }
             None => {
@@ -251,21 +267,31 @@ pub async fn open_chat_session(
                 candidate
                     .account
                     .on_success(&candidate.route.upstream_model);
-                let key = affinity_key.clone().or_else(|| keys.first().cloned());
-                let affinity_key = match (state.affinity.enabled(), key) {
+                let previous_affinity_key = affinity_key.clone();
+                let next_affinity_key = keys.first().cloned();
+                let binding = binding_after_success(
+                    preserve_affinity,
+                    affinity_binding.as_ref(),
+                    &candidate.account.key,
+                    &candidate.route.upstream_model,
+                );
+                let target_key = if preserve_affinity {
+                    next_affinity_key.or(previous_affinity_key.clone())
+                } else {
+                    next_affinity_key
+                };
+                let affinity_key = match (state.affinity.enabled(), target_key) {
                     (true, Some(key)) => {
-                        let binding = Binding {
-                            channel_id: candidate.account.key.channel_id.clone(),
-                            uid: candidate.account.key.uid.clone(),
-                            upstream_model: candidate.route.upstream_model.clone(),
-                            expires_at_ms: 0,
-                            hits: 0,
-                        };
                         let stored = state.affinity.bind(key.clone(), binding, now_ms());
-                        // 只在绑定点变化时写库：命中续期不动磁盘。
+                        // 命中也要把续期写回存储；内容指纹会滚到当前最新前缀。
                         if let Some(stored) = stored {
                             if let Err(error) = state.storage.save_affinity(&key, &stored) {
                                 eprintln!("[gateway] 亲和绑定落库失败：{}", error.message);
+                            } else if let Some(previous_key) = previous_affinity_key.as_deref() {
+                                if previous_key != key {
+                                    state.affinity.clear(previous_key);
+                                    let _ = state.storage.delete_affinity(previous_key);
+                                }
                             }
                         }
                         Some(key)
@@ -344,7 +370,10 @@ pub async fn open_chat_session(
                                 error.kind,
                                 error.scope,
                                 error.status,
-                                format!("{}；强制刷新凭据失败：{}", error.message, refresh_error.message),
+                                format!(
+                                    "{}；强制刷新凭据失败：{}",
+                                    error.message, refresh_error.message
+                                ),
                                 error.retryable,
                             );
                         }
@@ -358,18 +387,32 @@ pub async fn open_chat_session(
                     candidate.account.key, error.kind, error.retryable, error.message
                 );
                 let retryable = error.retryable;
-                // 失败即解绑：下次重新挑，避免一直钉在一个坏账号上。
-                if let Some(key) = affinity_key.take() {
-                    state.affinity.clear(&key);
-                    let _ = state.storage.delete_affinity(&key);
-                }
                 // 渠道校验拦截（11-128）：换号重试最稳 —— 出站身份跟着账号变，
                 // 同一个身份连发被拦的概率更高。
                 let switch_account = error.kind == ErrorKind::ChannelBlocked;
+                // 请求级错误（如内容拒绝、模型瞬时繁忙）不说明账号坏了；允许本次
+                // 请求溢出到其他账号，但保留原会话绑定。账号/模型级故障和渠道拦截
+                // 才解绑，让成功的备用账号接管后续请求。
+                let keep_original_binding = should_preserve_affinity_after_error(
+                    affinity_binding.as_ref(),
+                    &candidate.account.key,
+                    &error,
+                );
+                if let Some(key) = affinity_key.as_ref() {
+                    if keep_original_binding {
+                        preserve_affinity = true;
+                    } else {
+                        state.affinity.clear(key);
+                        let _ = state.storage.delete_affinity(key);
+                        affinity_key = None;
+                        affinity_binding = None;
+                        preserve_affinity = false;
+                    }
+                }
                 last_error = Some(error);
                 // 先归还槽位再换号，否则这个账号在本轮请求里再也选不到。
                 drop(guard);
-                if !retryable {
+                if !retryable || (state.affinity.mode() == AffinityMode::Strict && via_affinity) {
                     break;
                 }
                 if switch_account {
@@ -434,14 +477,12 @@ async fn try_open(
     // 适配器按**账号的平台**选，不是按渠道。
     // 平台下沉到账号后，同一渠道下可能混着 WorkBuddy 与自定义供应商的号，
     // 用渠道 id 去查注册表会查不到（或查到别人的）。
-    let adapter = state
-        .adapter_for(&candidate.account)
-        .ok_or_else(|| {
-            GatewayError::internal(format!(
-                "账号 {}/{} 没有平台配置，无法选择适配器",
-                candidate.account.key.channel_id, candidate.account.key.uid
-            ))
-        })?;
+    let adapter = state.adapter_for(&candidate.account).ok_or_else(|| {
+        GatewayError::internal(format!(
+            "账号 {}/{} 没有平台配置，无法选择适配器",
+            candidate.account.key.channel_id, candidate.account.key.uid
+        ))
+    })?;
 
     // 上游模型名可能与对外名不同（矩阵的 upstream_model 就是干这个的）。
     let mut routed = request.clone();
@@ -475,6 +516,49 @@ fn narrow_scope(mut error: GatewayError, model: &str) -> GatewayError {
         error.scope = ErrorScope::AccountModel(model.to_string());
     }
     error
+}
+
+/// Keep a binding when an overflow account fails, or when the failure only
+/// describes this request. Failures on the bound account itself break affinity
+/// only when their scope says the account or its model is unhealthy.
+fn should_preserve_affinity_after_error(
+    binding: Option<&Binding>,
+    attempted_account: &AccountKey,
+    error: &GatewayError,
+) -> bool {
+    let Some(binding) = binding else {
+        return false;
+    };
+    let attempted_bound_account =
+        binding.channel_id == attempted_account.channel_id && binding.uid == attempted_account.uid;
+    !attempted_bound_account
+        || (matches!(&error.scope, ErrorScope::Request)
+            && !matches!(
+                error.kind,
+                ErrorKind::AuthExpired | ErrorKind::ChannelBlocked
+            ))
+}
+
+/// On capacity spillover, advance the content-prefix key without moving the
+/// account binding to the temporary account used for this single request.
+fn binding_after_success(
+    preserve_affinity: bool,
+    previous_binding: Option<&Binding>,
+    selected_account: &AccountKey,
+    upstream_model: &str,
+) -> Binding {
+    if preserve_affinity {
+        if let Some(binding) = previous_binding {
+            return binding.clone();
+        }
+    }
+    Binding {
+        channel_id: selected_account.channel_id.clone(),
+        uid: selected_account.uid.clone(),
+        upstream_model: upstream_model.to_string(),
+        expires_at_ms: 0,
+        hits: 0,
+    }
 }
 
 fn decision_entry(
@@ -529,6 +613,88 @@ fn describe_allowlist(list: &std::collections::HashSet<String>) -> String {
 mod tests {
     use super::*;
 
+    fn test_binding(channel_id: &str, uid: &str) -> Binding {
+        Binding {
+            channel_id: channel_id.into(),
+            uid: uid.into(),
+            upstream_model: "glm-5.3".into(),
+            expires_at_ms: 123,
+            hits: 4,
+        }
+    }
+
+    #[test]
+    fn overflow_account_error_does_not_break_original_affinity() {
+        let binding = test_binding("channel-a", "account-a");
+        let overflow = AccountKey::new("channel-b", "account-b");
+        let error = GatewayError::network("temporary upstream failure");
+
+        assert!(should_preserve_affinity_after_error(
+            Some(&binding),
+            &overflow,
+            &error
+        ));
+    }
+
+    #[test]
+    fn account_failure_on_bound_account_breaks_affinity() {
+        let binding = test_binding("channel-a", "account-a");
+        let bound = AccountKey::new("channel-a", "account-a");
+        let error = GatewayError::network("temporary upstream failure");
+
+        assert!(!should_preserve_affinity_after_error(
+            Some(&binding),
+            &bound,
+            &error
+        ));
+    }
+
+    #[test]
+    fn request_scoped_failure_keeps_binding_to_same_account() {
+        let binding = test_binding("channel-a", "account-a");
+        let bound = AccountKey::new("channel-a", "account-a");
+        let error = GatewayError::invalid_request("bad request");
+
+        assert!(should_preserve_affinity_after_error(
+            Some(&binding),
+            &bound,
+            &error
+        ));
+    }
+
+    #[test]
+    fn channel_block_on_bound_account_breaks_affinity_even_if_request_scoped() {
+        let binding = test_binding("channel-a", "account-a");
+        let bound = AccountKey::new("channel-a", "account-a");
+        let error = GatewayError::new(
+            ErrorKind::ChannelBlocked,
+            ErrorScope::Request,
+            403,
+            "blocked",
+            true,
+        );
+
+        assert!(!should_preserve_affinity_after_error(
+            Some(&binding),
+            &bound,
+            &error
+        ));
+    }
+
+    #[test]
+    fn successful_overflow_keeps_original_binding_target() {
+        let binding = test_binding("channel-a", "account-a");
+        let overflow = AccountKey::new("channel-b", "account-b");
+
+        let kept = binding_after_success(true, Some(&binding), &overflow, "glm-5.3");
+        assert_eq!(kept, binding);
+
+        let migrated = binding_after_success(false, Some(&binding), &overflow, "glm-5.3");
+        assert_eq!(migrated.channel_id, "channel-b");
+        assert_eq!(migrated.uid, "account-b");
+        assert_eq!(migrated.upstream_model, "glm-5.3");
+    }
+
     #[test]
     fn reset_bearing_rate_limit_is_narrowed_to_the_model() {
         let error = GatewayError::new(
@@ -562,10 +728,7 @@ mod tests {
 
     #[test]
     fn repeated_model_busy_errors_leave_account_and_models_ready() {
-        use crate::gateway::{
-            channels::workbuddy,
-            config::CooldownConfig,
-        };
+        use crate::gateway::{channels::workbuddy, config::CooldownConfig};
 
         let mut account = PoolAccount::new("workbuddy", "busy-account");
         account.requires_credential = false;
@@ -576,7 +739,10 @@ mod tests {
             r#"{"code":14003}"#,
         ] {
             for _ in 0..10 {
-                let error = narrow_scope(workbuddy::refine(429, body, "upstream-flash"), "upstream-flash");
+                let error = narrow_scope(
+                    workbuddy::refine(429, body, "upstream-flash"),
+                    "upstream-flash",
+                );
                 assert_eq!(error.scope, ErrorScope::Request);
                 account.apply_error(&error, &CooldownConfig::default(), now);
                 assert!(account.is_ready("upstream-flash", now));
@@ -592,8 +758,15 @@ mod tests {
         }
         // 繁忙不应提前累积后续真实账号 429 的退避次数。
         let policy = CooldownConfig::default();
-        account.apply_error(&workbuddy::refine(429, "too many requests", "upstream-flash"), &policy, now);
-        assert_eq!(account.cooldown_until_ms(), now + policy.soft_base_secs * 1000);
+        account.apply_error(
+            &workbuddy::refine(429, "too many requests", "upstream-flash"),
+            &policy,
+            now,
+        );
+        assert_eq!(
+            account.cooldown_until_ms(),
+            now + policy.soft_base_secs * 1000
+        );
     }
 }
 
@@ -680,9 +853,7 @@ pub async fn probe_account(
 
             light_pick
                 .or_else(|| candidates.first().cloned())
-                .ok_or_else(|| {
-                    GatewayError::invalid_request("该渠道没有任何模型可用于测试")
-                })?
+                .ok_or_else(|| GatewayError::invalid_request("该渠道没有任何模型可用于测试"))?
         }
     };
     let upstream_model = matrix
@@ -764,7 +935,10 @@ pub async fn probe_account(
         Ok(Err(error)) if error.kind == ErrorKind::AuthExpired => {
             match refresh::refresh(state, account, true).await {
                 Ok(_) => {
-                    eprintln!("[gateway] 探活遇到 401，已强制刷新凭据并重试 {}", account.key);
+                    eprintln!(
+                        "[gateway] 探活遇到 401，已强制刷新凭据并重试 {}",
+                        account.key
+                    );
                     tokio::time::timeout(timeout, attempt()).await
                 }
                 Err(refresh_error) => {
@@ -773,7 +947,10 @@ pub async fn probe_account(
                         error.kind,
                         error.scope,
                         error.status,
-                        format!("{}；强制刷新凭据失败：{}", error.message, refresh_error.message),
+                        format!(
+                            "{}；强制刷新凭据失败：{}",
+                            error.message, refresh_error.message
+                        ),
                         error.retryable,
                     ));
                 }
@@ -859,22 +1036,22 @@ mod probe_tests {
 
         let storage = Storage::open(&data_source, master_key).await.expect("库");
         let config = Config::default();
-        let state = GatewayState::initialize(config, storage).await.expect("状态");
+        let state = GatewayState::initialize(config, storage)
+            .await
+            .expect("状态");
 
         let Some(account) = state.pool.accounts().into_iter().next() else {
             panic!("号池为空：先通过管理台添加一个账号");
         };
 
-        let outcome = probe_account(
-            &state,
-            &account,
-            None,
-            std::time::Duration::from_secs(45),
-        )
-        .await
-        .expect("探针通过");
+        let outcome = probe_account(&state, &account, None, std::time::Duration::from_secs(45))
+            .await
+            .expect("探针通过");
 
         println!("=== 探针结果 ===");
-        println!("{}", serde_json::to_string_pretty(&outcome).unwrap_or_default());
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&outcome).unwrap_or_default()
+        );
     }
 }
