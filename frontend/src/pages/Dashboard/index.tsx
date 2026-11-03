@@ -274,11 +274,7 @@ export const DashboardPage = () => {
         <StatusBadge
           tone={gatewayHealthy ? "success" : status ? "danger" : "neutral"}
           label={
-            gatewayHealthy
-              ? `网关运行中 · ${status?.addr ?? "-"}`
-              : status
-                ? "网关未运行"
-                : "网关状态未知"
+            gatewayHealthy ? "网关运行中" : status ? "网关未运行" : "网关状态未知"
           }
         />
         <span className="text-xs text-muted-foreground">

@@ -438,6 +438,16 @@ export type TaskChannelLive = {
 
 export type GatewayStatus = {
   running: boolean;
+  /**
+   * 网关实际监听地址（`GATEWAY_BIND` / `GATEWAY_PORT`）。
+   *
+   * **不要显示给用户**：默认值就是 `http://0.0.0.0:18788`，而 `0.0.0.0` 是
+   * "监听全部网卡"，不是一个能连的地址 —— 抄进客户端只会连不上。
+   * 客户端该填的地址在「密钥」页「接入信息」里，按浏览器实际访问地址推算。
+   *
+   * 字段留着是因为诊断排查时它确实能证明"网关起来了吗、在哪个端口"，
+   * 这属于日志/排障信息，不属于这张页面要回答的问题。
+   */
   addr: string | null;
   error: string | null;
   uptimeMs: number;

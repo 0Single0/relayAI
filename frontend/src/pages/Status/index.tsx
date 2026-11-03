@@ -71,15 +71,24 @@ export const StatusPage = () => {
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-4">
-      {/* 工具条：网关状态 + 窗口切换 + 自动刷新 */}
+      {/*
+        工具条：网关状态 + 窗口切换 + 自动刷新。
+
+        网关监听地址**不再显示**（这里是唯一的一处，以前是徽标右边一行小字）。
+        它来自 `GATEWAY_BIND` / `GATEWAY_PORT`，默认就是 `http://0.0.0.0:18788`：
+        0.0.0.0 是"监听全部网卡"，**不是一个能连的地址** —— 抄进客户端只会连不上。
+        想在别的机器上访问，要填的是这台机器的真实 IP / 域名（那是「密钥」页
+        「接入信息」按浏览器地址算出来的那份），不是这一行。
+
+        留着它唯一的效果是让人误以为"网关的地址是 0.0.0.0"，
+        于是去改这里、或者把它填进配置 —— 两种都是错的。既然答不了一个有用的问题，
+        就不占版面。
+      */}
       <div className="flex flex-wrap items-center gap-2">
         <StatusBadge
           tone={running ? "success" : status ? "danger" : "neutral"}
           label={running ? "网关运行中" : status ? "网关未运行" : "状态未知"}
         />
-        {status?.addr ? (
-          <span className="font-mono text-[11px] text-muted-foreground">{status.addr}</span>
-        ) : null}
 
         <div className="ml-auto flex flex-wrap items-center gap-2">
           <div

@@ -148,9 +148,13 @@ func AccountKey(channelID, uid string) string {
 // ---- 状态 ----
 
 // Status 是网关运行状态。
+//
+// 网关还会在 JSON 里回一个 `addr`（实际监听地址），这里**故意不接收**：
+// 它默认是 `http://0.0.0.0:18788`，而 0.0.0.0 是"监听全部网卡"而不是可连地址 ——
+// 一旦透到界面上，用户会以为网关的地址就是它，于是抄进客户端配置，然后连不上。
+// 客户端该填的地址由「密钥」页按浏览器实际访问地址推算，与这个字段无关。
 type Status struct {
 	Running     bool   `json:"running"`
-	Addr        string `json:"addr"`
 	Error       string `json:"error"`
 	Version     string `json:"version"`
 	UptimeMs    int64  `json:"uptimeMs"`

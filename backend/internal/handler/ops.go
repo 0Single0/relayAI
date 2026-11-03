@@ -90,7 +90,6 @@ func registerOps(mux *http.ServeMux, ctx *svc.ServiceContext) {
 
 			"gateway": map[string]any{
 				"running":  status.Running,
-				"addr":     status.Addr,
 				"version":  status.Version,
 				"uptimeMs": status.UptimeMs,
 				"auth":     status.Auth,

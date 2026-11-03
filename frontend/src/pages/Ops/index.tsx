@@ -61,7 +61,6 @@ type OpsOverview = {
   checkedAt: string;
   gateway?: {
     running: boolean;
-    addr: string;
     version: string;
     uptimeMs: number;
     auth: string;
@@ -223,11 +222,6 @@ export const OpsPage = () => {
           tone={data?.gatewayOnline ? "success" : data ? "danger" : "neutral"}
           label={data?.gatewayOnline ? "网关运行中" : data ? "网关离线" : "状态未知"}
         />
-        {data?.gateway?.addr ? (
-          <span className="font-mono text-[11px] text-muted-foreground">
-            {data.gateway.addr}
-          </span>
-        ) : null}
 
         <div className="ml-auto flex flex-wrap items-center gap-2">
           <div
