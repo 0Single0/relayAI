@@ -16,6 +16,7 @@ export type CatalogChannelRef = {
 
 export type CatalogModel = {
   name: string;
+  modelProvider: string;
   displayName: string;
   contextWindow: number | null;
   maxOutput: number | null;
@@ -61,6 +62,7 @@ export const applyOpenRouterPrices = () =>
 export const updateModelPrice = (
   name: string,
   payload: {
+    modelProvider?: string;
     inputPrice?: number;
     outputPrice?: number;
     cacheReadPrice?: number;

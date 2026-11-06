@@ -71,6 +71,9 @@ func main() {
 	}
 
 	svcCtx := svc.NewServiceContext(c, db)
+	if err := svcCtx.Store.ApplyBuiltinModelProviders(ctx); err != nil {
+		logx.Must(fmt.Errorf("模型厂商初始化失败: %w", err))
+	}
 
 	// 用标准库 http.Server 而不是 rest.Server：
 	// 本 API 需要 PATCH 与 `{id}` 路径参数，go-zero 的路由器两者都不支持

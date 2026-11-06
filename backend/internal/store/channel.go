@@ -46,6 +46,7 @@ func (s *Store) DB() *gorm.DB {
 // Channel 是渠道的完整视图。
 type Channel struct {
 	ID               string          `json:"id"`
+	ModelProvider    string          `json:"modelProvider"`
 	Name             string          `json:"name"`
 	Adapter          string          `json:"adapter"`
 	Enabled          bool            `json:"enabled"`
@@ -93,6 +94,7 @@ type ChannelCaps struct {
 // 不依赖结构体字段顺序 —— 后者在改动投影时极易错位。
 type channelRow struct {
 	ID               string           `gorm:"column:id"`
+	ModelProvider    string           `gorm:"column:model_provider"`
 	Name             string           `gorm:"column:name"`
 	Adapter          string           `gorm:"column:adapter"`
 	Enabled          bool             `gorm:"column:enabled"`
@@ -122,7 +124,7 @@ type channelRow struct {
 // 保留 SQL 但交给 GORM 执行与扫描，统一在同一个机制下。
 func (s *Store) ListChannels(ctx context.Context) ([]Channel, error) {
 	const query = `
-		SELECT c.id, c.name, c.adapter, c.enabled, c.priority, c.weight, c.options,
+		SELECT c.id, c.model_provider, c.name, c.adapter, c.enabled, c.priority, c.weight, c.options,
 		       c.channel_ratio::float8 AS channel_ratio,
 		       c.concurrency_limit, c.rate_limit_qps,
 		       COALESCE(a.cnt, 0) AS account_count,
@@ -137,19 +139,27 @@ func (s *Store) ListChannels(ctx context.Context) ([]Channel, error) {
 		       COALESCE(c.status_visible, false) AS status_visible
 		FROM channels c
 		LEFT JOIN (
-			SELECT channel_id, count(*) AS cnt FROM accounts GROUP BY channel_id
+			SELECT group_id AS channel_id, count(*) AS cnt FROM account_groups GROUP BY group_id
 		) a ON a.channel_id = c.id
 		LEFT JOIN (
 			SELECT channel_id, count(*) AS cnt FROM usage_logs
 			WHERE ts >= date_trunc('day', now()) AND NOT is_rejection
 			GROUP BY channel_id
 		) u ON u.channel_id = c.id
-		LEFT JOIN channel_caps cap ON cap.channel_id = c.id
+		LEFT JOIN (
+			SELECT ag.group_id,
+			 bool_or(a.platform LIKE 'workbuddy%' AND COALESCE(a.options->>'realm', 'cn') <> 'intl') AS tasks,
+			 bool_or(a.platform LIKE 'workbuddy%') AS daily,
+			 bool_or(a.platform = 'trae' OR (a.platform LIKE 'workbuddy%' AND COALESCE(a.options->>'realm', 'cn') <> 'intl')) AS checkin
+			FROM account_groups ag JOIN accounts a ON a.id = ag.account_id
+			WHERE ag.enabled AND a.enabled GROUP BY ag.group_id
+		) cap ON cap.group_id = c.id
 		-- 该渠道下出现过的平台。用 DISTINCT 而不是取第一个：
 		-- 一个计价分组本来就可能混多个平台，界面要如实显示。
 		LEFT JOIN (
-			SELECT channel_id, array_agg(DISTINCT platform ORDER BY platform) AS platforms
-			FROM accounts WHERE platform <> '' GROUP BY channel_id
+			SELECT ag.group_id AS channel_id, array_agg(DISTINCT a.platform ORDER BY a.platform) AS platforms
+			FROM account_groups ag JOIN accounts a ON a.id = ag.account_id
+			WHERE a.platform <> '' GROUP BY ag.group_id
 		) p ON p.channel_id = c.id
 		ORDER BY c.priority DESC, c.id`
 
@@ -162,6 +172,7 @@ func (s *Store) ListChannels(ctx context.Context) ([]Channel, error) {
 	for _, row := range rows {
 		item := Channel{
 			ID:               row.ID,
+			ModelProvider:    row.ModelProvider,
 			Name:             row.Name,
 			Adapter:          row.Adapter,
 			Enabled:          row.Enabled,
@@ -210,6 +221,7 @@ func (s *Store) GetChannel(ctx context.Context, id string) (*Channel, error) {
 // ChannelInput 是新建/更新渠道的输入。
 type ChannelInput struct {
 	ID               string          `json:"id"`
+	ModelProvider    *string         `json:"modelProvider"`
 	Name             string          `json:"name"`
 	Adapter          string          `json:"adapter"`
 	Enabled          *bool           `json:"enabled"`
@@ -233,6 +245,16 @@ type ChannelInput struct {
 
 // CreateChannel 新建渠道。
 func (s *Store) CreateChannel(ctx context.Context, input ChannelInput) (*Channel, error) {
+	provider := ""
+	if input.ModelProvider != nil {
+		provider = normalizeProvider(*input.ModelProvider)
+		if !ValidModelProvider(provider) {
+			return nil, fmt.Errorf("%w：请选择有效的模型厂商", ErrInvalidInput)
+		}
+	}
+	if input.Adapter == "" {
+		input.Adapter = "custom"
+	}
 	enabled := true
 	if input.Enabled != nil {
 		enabled = *input.Enabled
@@ -261,6 +283,7 @@ func (s *Store) CreateChannel(ctx context.Context, input ChannelInput) (*Channel
 
 	record := models.Channels{
 		ID:               input.ID,
+		ModelProvider:    provider,
 		Name:             input.Name,
 		Adapter:          input.Adapter,
 		Enabled:          enabled,
@@ -296,6 +319,27 @@ func (s *Store) CreateChannel(ctx context.Context, input ChannelInput) (*Channel
 
 // UpdateChannel 更新渠道。
 func (s *Store) UpdateChannel(ctx context.Context, id string, input ChannelInput) (*Channel, error) {
+	currentGroup, err := s.GetChannel(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	provider := currentGroup.ModelProvider
+	if input.ModelProvider != nil {
+		provider = normalizeProvider(*input.ModelProvider)
+		if !ValidModelProvider(provider) {
+			return nil, fmt.Errorf("%w：请选择有效的模型厂商", ErrInvalidInput)
+		}
+		if currentGroup.ModelProvider != "" && currentGroup.ModelProvider != provider {
+			return nil, fmt.Errorf("%w：分组创建后不可切换模型厂商，请新建分组", ErrInvalidInput)
+		}
+	}
+	modelAllow := currentGroup.ModelAllow
+	if input.ModelAllow != nil {
+		modelAllow = input.ModelAllow
+	}
+	if err := s.validateGroupModels(ctx, provider, modelAllow); err != nil {
+		return nil, err
+	}
 	if input.Adapter != "" || len(input.Options) > 0 {
 		current, err := s.GetChannel(ctx, id)
 		if err != nil {
@@ -311,6 +355,9 @@ func (s *Store) UpdateChannel(ctx context.Context, id string, input ChannelInput
 	// 只写传了的字段：GORM 的 `Updates(map)` 天然跳过零值问题，
 	// 用 map 而不是 struct —— struct 的零值会被忽略，无法区分"不改"与"改成 0"。
 	updates := map[string]any{}
+	if input.ModelProvider != nil {
+		updates["model_provider"] = provider
+	}
 
 	if input.Name != "" {
 		updates["name"] = input.Name

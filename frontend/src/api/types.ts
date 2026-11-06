@@ -28,6 +28,7 @@ export type ChannelOptions = {
 export type Channel = {
   id: string;
   name: string;
+  modelProvider: string;
   adapter: ChannelAdapter;
   enabled: boolean;
   priority: number;
@@ -68,6 +69,8 @@ export type Channel = {
 export type Account = {
   id: number;
   channelId: string;
+  channelIds: string[];
+  groups: Array<{ groupId: string; name: string; modelProvider: string; enabled: boolean; priority: number | null; weight: number | null }>;
   channelName: string;
   adapter: ChannelAdapter;
   /** 上游平台（决定用哪个适配器）。 */
@@ -199,6 +202,7 @@ export type KeyUsage = {
 
 export type Model = {
   canonicalName: string;
+  modelProvider: string;
   displayName: string;
   contextWindow: number | null;
   maxOutput: number | null;

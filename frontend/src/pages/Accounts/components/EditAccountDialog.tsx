@@ -7,7 +7,7 @@ import { toast } from "@/components/common/Toast/store";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { accountMatchesChannel, accountPlatformLabel, outboundOptions, upstreamProtocolOptions } from "@/pages/Channels/shared";
+import { accountPlatformLabel, outboundOptions, upstreamProtocolOptions, modelProviderLabel } from "@/pages/Channels/shared";
 import { getRequestErrorMessage } from "@/utils/request";
 import { CustomModelPicker } from "./CustomModelPicker";
 import { createModelDraft, getCustomModelError, serializeCustomModels, type CustomModelDraft } from "./customModels";
@@ -18,7 +18,7 @@ type Props = { account: Account | null; channels: Channel[]; proxies: Proxy[]; o
 export const EditAccountDialog = ({ account, channels, proxies, onClose, onDone }: Props) => {
   const [nickname, setNickname] = useState("");
   const [enabled, setEnabled] = useState(true);
-  const [channelId, setChannelId] = useState("");
+  const [groupIds, setGroupIds] = useState<string[]>([]);
   const [maxInflight, setMaxInflight] = useState("");
   const [priority, setPriority] = useState("");
   const [weight, setWeight] = useState("");
@@ -39,7 +39,7 @@ export const EditAccountDialog = ({ account, channels, proxies, onClose, onDone 
     if (!account) return;
     setNickname(account.nickname);
     setEnabled(account.enabled);
-    setChannelId(account.channelId);
+    setGroupIds(account.channelIds ?? (account.channelId ? [account.channelId] : []));
     setMaxInflight(account.maxInflight == null ? "" : String(account.maxInflight));
     setPriority(account.priorityOverride == null ? "" : String(account.priorityOverride));
     setWeight(account.weightOverride == null ? "" : String(account.weightOverride));
@@ -79,7 +79,7 @@ export const EditAccountDialog = ({ account, channels, proxies, onClose, onDone 
         maxInflight: maxInflight.trim() ? Number(maxInflight) : null,
         priorityOverride: priority.trim() ? Number(priority) : null,
         weightOverride: weight.trim() ? Number(weight) : null,
-        ...(channelId !== account.channelId ? { channelId } : {}),
+        ...(JSON.stringify(groupIds) !== JSON.stringify(account.channelIds ?? []) ? { groups: groupIds.map(groupId => ({ groupId, enabled: true })) } : {}),
         ...(custom ? {
           baseUrl: baseUrl.trim(), protocol,
           ...(apiKey.trim() ? { apiKey: apiKey.trim() } : {}),
@@ -94,7 +94,7 @@ export const EditAccountDialog = ({ account, channels, proxies, onClose, onDone 
       onDone();
     } catch (requestError) { setError(getRequestErrorMessage(requestError)); }
     finally { setPending(false); }
-  }, [account, pending, maxInflight, priority, weight, custom, baseUrl, models, nickname, enabled, channelId, protocol, apiKey, platform, outbound, proxyId, onDone]);
+  }, [account, pending, maxInflight, priority, weight, custom, baseUrl, models, nickname, enabled, groupIds, protocol, apiKey, platform, outbound, proxyId, onDone]);
 
   return <Dialog open={account !== null} onOpenChange={next => { if (!next && !pending) onClose(); }}>
     <DialogContent className="max-w-2xl" showCloseButton={!pending}>
@@ -103,7 +103,7 @@ export const EditAccountDialog = ({ account, channels, proxies, onClose, onDone 
         <div className="grid min-w-0 grid-cols-1 gap-3 sm:grid-cols-2">
           <label htmlFor="edit-account-nickname" className="flex min-w-0 flex-col gap-1 text-xs font-medium">昵称<input id="edit-account-nickname" value={nickname} onChange={event => setNickname(event.target.value)} className={inputClass} /></label>
           <div className="flex min-w-0 flex-col gap-1"><label id="edit-account-status" className="text-xs font-medium">状态</label><Select disabled={pending} value={enabled ? "on" : "off"} onValueChange={next => setEnabled(next === "on")}><SelectTrigger aria-labelledby="edit-account-status"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="on">启用</SelectItem><SelectItem value="off">停用（不参与调度）</SelectItem></SelectContent></Select></div>
-          <div className="flex min-w-0 flex-col gap-1 sm:col-span-2"><label id="edit-account-group" className="text-xs font-medium">所属分组</label><Select disabled={pending} value={channelId || "__none__"} onValueChange={value => setChannelId(value === "__none__" ? "" : value)}><SelectTrigger aria-label="所属分组"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="__none__">暂不分配</SelectItem>{channels.filter(channel => account && accountMatchesChannel(account, channel) && (channel.enabled || channel.id === account.channelId)).map(channel => <SelectItem key={channel.id} value={channel.id} disabled={!channel.enabled}>{channel.name}（×{channel.channelRatio.toFixed(2)}）</SelectItem>)}</SelectContent></Select><p className="text-[11px] text-muted-foreground">仅可选择相同平台及版本的分组；未分配账号不参与对外调度。</p></div>
+          <fieldset disabled={pending} className="flex min-w-0 flex-col gap-2 sm:col-span-2"><legend className="text-xs font-medium">所属分组</legend><div className="max-h-36 overflow-y-auto rounded-md border p-2">{channels.map(channel => <label key={channel.id} className="flex cursor-pointer items-center gap-2 py-1.5 text-xs"><input type="checkbox" checked={groupIds.includes(channel.id)} onChange={event => setGroupIds(current => event.target.checked ? [...current, channel.id] : current.filter(id => id !== channel.id))} /> <span className="min-w-0 flex-1 truncate">{channel.name}</span><span className="text-muted-foreground">{channel.modelProvider ? modelProviderLabel(channel.modelProvider) : "旧分组"} · ×{channel.channelRatio.toFixed(2)}</span></label>)}</div><p className="text-[11px] text-muted-foreground">账号凭据和并发在多个分组间共享；已选择 {groupIds.length} 个分组。</p></fieldset>
           <label htmlFor="edit-account-concurrency" className="flex min-w-0 flex-col gap-1 text-xs font-medium">并发上限<input id="edit-account-concurrency" value={maxInflight} onChange={event => setMaxInflight(event.target.value)} inputMode="numeric" placeholder="留空使用系统默认" className={inputClass} /><span className="text-[11px] font-normal text-muted-foreground">同时处理的请求数上限；列表显示当前请求数 / 生效上限。</span></label>
           <div className="flex min-w-0 flex-col gap-1"><label id="edit-account-proxy" className="text-xs font-medium">出站代理</label><Select disabled={pending} value={proxyId == null ? "__direct__" : String(proxyId)} onValueChange={value => setProxyId(value === "__direct__" ? null : Number(value))}><SelectTrigger aria-labelledby="edit-account-proxy"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="__direct__">直连（用服务器出口 IP）</SelectItem>{proxies.map(proxy => <SelectItem key={proxy.id} value={String(proxy.id)}>{proxy.name} · {proxy.protocol}://{proxy.host}:{proxy.port}</SelectItem>)}</SelectContent></Select></div>
           <label htmlFor="edit-account-priority" className="flex min-w-0 flex-col gap-1 text-xs font-medium">调度优先级<input id="edit-account-priority" value={priority} onChange={event => setPriority(event.target.value)} inputMode="numeric" className={inputClass} /></label>

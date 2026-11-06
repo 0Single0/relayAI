@@ -53,7 +53,7 @@ import { ProbeDialog } from "@/pages/Accounts/components/ProbeDialog";
 import { CreateAccountDrawer } from "@/pages/Accounts/components/CreateAccountDrawer";
 import { EditAccountDialog } from "@/pages/Accounts/components/EditAccountDialog";
 import { toast } from "@/components/common/Toast/store";
-import { accountMatchesChannel, accountPlatformLabel } from "@/pages/Channels/shared";
+import { accountPlatformLabel } from "@/pages/Channels/shared";
 import { compactNumber } from "@/lib/charts";
 import { cn } from "@/lib/utils";
 import { getRequestErrorMessage } from "@/utils/request";
@@ -227,10 +227,10 @@ export const AccountsPage = () => {
         没有它，用户想看"哪些号还没归组"只能一页页翻、靠肉眼找空单元格。
       */
       if (channelFilter === UNASSIGNED) {
-        if (account.channelId) {
+        if ((account.channelIds ?? []).length > 0) {
           return false;
         }
-      } else if (channelFilter !== ALL && account.channelId !== channelFilter) {
+      } else if (channelFilter !== ALL && !(account.channelIds ?? [account.channelId]).includes(channelFilter)) {
         return false;
       }
       if (!trimmed) {
@@ -239,7 +239,7 @@ export const AccountsPage = () => {
       return (
         account.uid.toLowerCase().includes(trimmed) ||
         account.nickname.toLowerCase().includes(trimmed) ||
-        account.channelId.toLowerCase().includes(trimmed) ||
+        (account.channelIds ?? [account.channelId]).some(id => id.toLowerCase().includes(trimmed)) ||
         account.platform.toLowerCase().includes(trimmed) ||
         accountPlatformLabel(account).toLowerCase().includes(trimmed)
       );
@@ -354,16 +354,13 @@ export const AccountsPage = () => {
 
    * 为什么需要：号可以先建、后归组 —— 尤其批量导入之后，
    * 逐个进编辑框改分组是纯粹的体力活。
-   * `channelId` 传空串表示把选中的号全部摘回"待分配"。
+   * 选择目标分组会把它加入所选账号，不会覆盖已有归组。
    */
   const assignMany = useCallback(
     async (ids: string[], target: string) => {
       const targetChannel = channels.find((channel) => channel.id === target);
-      if (target && (!targetChannel || ids.some((id) => {
-        const account = accounts.find((item) => String(item.id) === id);
-        return !account || !accountMatchesChannel(account, targetChannel);
-      }))) {
-        toast.error("无法分配", "所选账号必须与目标分组的平台及版本一致");
+      if (target && !targetChannel) {
+        toast.error("无法分配", "目标分组不存在");
         return;
       }
       setBusy("assign");
@@ -372,7 +369,8 @@ export const AccountsPage = () => {
         for (const key of ids) {
           const account = accounts.find((item) => String(item.id) === key);
           if (account) {
-            await updateAccount(account.id, { channelId: target });
+            const nextGroups = target ? [...new Set([...(account.channelIds ?? []), target])] : [];
+            await updateAccount(account.id, { groups: nextGroups.map(groupId => ({ groupId, enabled: true })) });
           }
         }
         setSelected(new Set());
@@ -434,9 +432,9 @@ export const AccountsPage = () => {
           号已经建好、凭据可用，只是还没归到任何计价桶里，因此不参与对外调度。
         */
         render: (account) =>
-          account.channelId ? (
-            <span className="block truncate text-xs text-muted-foreground">
-              {account.channelName || account.channelId}
+          (account.channelIds ?? []).length > 0 ? (
+            <span className="block truncate text-xs text-muted-foreground" title={account.groups.map(group => group.name).join("、")}>
+              {account.groups.map(group => group.name).join("、")}
             </span>
           ) : (
             <StatusBadge tone="warning" label="待分配" dot={false} />
@@ -684,7 +682,7 @@ export const AccountsPage = () => {
                   分配到分组（{selected.size} 个账号）…
                 </SelectItem>
                 <SelectItem value="__unassign__">解除分配（回到待分配）</SelectItem>
-                {channels.filter((channel) => channel.enabled && accounts.filter((account) => selected.has(String(account.id))).every((account) => accountMatchesChannel(account, channel))).map((channel) => (
+                {channels.filter((channel) => channel.enabled).map((channel) => (
                   <SelectItem key={channel.id} value={channel.id}>
                     {channel.name}
                   </SelectItem>

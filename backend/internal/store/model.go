@@ -9,6 +9,7 @@ import (
 // Model 是模型目录与价格。
 type Model struct {
 	CanonicalName  string          `json:"canonicalName"`
+	ModelProvider  string          `json:"modelProvider"`
 	DisplayName    string          `json:"displayName"`
 	ContextWindow  *int            `json:"contextWindow"`
 	MaxOutput      *int            `json:"maxOutput"`
@@ -24,7 +25,7 @@ type Model struct {
 // ListModels 返回模型目录。
 func (s *Store) ListModels(ctx context.Context) ([]Model, error) {
 	const query = `
-		SELECT canonical_name, display_name, context_window, max_output,
+		SELECT canonical_name, model_provider, display_name, context_window, max_output,
 		       capabilities,
 		       input_price::float8, output_price::float8, cache_read_price::float8,
 		       model_ratio::float8, enabled
@@ -39,6 +40,7 @@ func (s *Store) ListModels(ctx context.Context) ([]Model, error) {
 	for _, row := range rows {
 		model := Model{
 			CanonicalName:  row.CanonicalName,
+			ModelProvider:  row.ModelProvider,
 			DisplayName:    row.DisplayName,
 			ContextWindow:  row.ContextWindow,
 			MaxOutput:      row.MaxOutput,
@@ -59,6 +61,7 @@ func (s *Store) ListModels(ctx context.Context) ([]Model, error) {
 
 // ModelInput 是更新模型的输入。
 type ModelInput struct {
+	ModelProvider  *string         `json:"modelProvider"`
 	DisplayName    *string         `json:"displayName"`
 	ContextWindow  *int            `json:"contextWindow"`
 	MaxOutput      *int            `json:"maxOutput"`
@@ -77,13 +80,20 @@ type ModelInput struct {
 // 于是 0.8 被**向零取整成 0**、2.8 变 2 —— 表现为"填了价格保存后又变回去"。
 // 这不是精度问题（列是 numeric(14,8)），而是 COALESCE 的类型统一规则。
 func (s *Store) UpdateModel(ctx context.Context, name string, input ModelInput) (*Model, error) {
+	if input.ModelProvider != nil {
+		value := normalizeProvider(*input.ModelProvider)
+		if value != "" && !ValidModelProvider(value) {
+			return nil, fmt.Errorf("%w：模型厂商标识无效", ErrInvalidInput)
+		}
+		input.ModelProvider = &value
+	}
 	const query = `
 		INSERT INTO models (canonical_name, display_name, context_window, max_output,
 		                    capabilities, input_price, output_price, cache_read_price,
-		                    model_ratio, enabled)
+		                    model_ratio, enabled, model_provider)
 		VALUES ($1, COALESCE($2, ''), $3, $4, COALESCE($5, '{}'::jsonb),
 		        COALESCE($6::numeric, 0), COALESCE($7::numeric, 0), COALESCE($8::numeric, 0),
-		        COALESCE($9::numeric, 1.0), COALESCE($10, true))
+		        COALESCE($9::numeric, 1.0), COALESCE($10, true), COALESCE($11, ''))
 		ON CONFLICT (canonical_name) DO UPDATE SET
 		    display_name = COALESCE($2, models.display_name),
 		    context_window = COALESCE($3, models.context_window),
@@ -93,8 +103,9 @@ func (s *Store) UpdateModel(ctx context.Context, name string, input ModelInput) 
 		    output_price = COALESCE($7::numeric, models.output_price),
 		    cache_read_price = COALESCE($8::numeric, models.cache_read_price),
 		    model_ratio = COALESCE($9::numeric, models.model_ratio),
-		    enabled = COALESCE($10, models.enabled)
-		RETURNING canonical_name, display_name, context_window, max_output,
+		    enabled = COALESCE($10, models.enabled),
+		    model_provider = COALESCE($11, models.model_provider)
+		RETURNING canonical_name, model_provider, display_name, context_window, max_output,
 		          capabilities, input_price::float8, output_price::float8,
 		          cache_read_price::float8, model_ratio::float8, enabled`
 
@@ -102,13 +113,14 @@ func (s *Store) UpdateModel(ctx context.Context, name string, input ModelInput) 
 	if err := s.queryOne(ctx, &row, query,
 		name, input.DisplayName, input.ContextWindow, input.MaxOutput,
 		nullableJSON(input.Capabilities), input.InputPrice, input.OutputPrice,
-		input.CacheReadPrice, input.ModelRatio, input.Enabled,
+		input.CacheReadPrice, input.ModelRatio, input.Enabled, input.ModelProvider,
 	); err != nil {
 		return nil, fmt.Errorf("更新模型失败: %w", err)
 	}
 
 	model := Model{
 		CanonicalName:  row.CanonicalName,
+		ModelProvider:  row.ModelProvider,
 		DisplayName:    row.DisplayName,
 		ContextWindow:  row.ContextWindow,
 		MaxOutput:      row.MaxOutput,

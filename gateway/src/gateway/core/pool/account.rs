@@ -40,6 +40,9 @@ impl std::fmt::Display for AccountKey {
 
 #[derive(Debug, Default)]
 pub struct AccountRuntime {
+    credentials: RwLock<Credential>,
+    quota: RwLock<Option<QuotaSnapshot>>,
+    max_inflight: AtomicU32,
     /// 账号级冷却（401 / 无 reset 的 429）。
     cooldown_until: AtomicU64,
     /// 402 余额停放，到次日本地 04:00。
@@ -65,13 +68,11 @@ pub struct PoolAccount {
     pub key: AccountKey,
     pub nickname: String,
     pub enabled: bool,
+    pub membership_enabled: bool,
     /// 该渠道是否必须有凭据才可用（假渠道不需要）。
     pub requires_credential: bool,
     /// 凭据是静态密钥（自定义供应商）还是会过期的令牌。静态凭据不参与刷新。
     pub static_credential: bool,
-    credentials: RwLock<Credential>,
-    /// 额度快照：渠道无关，面板按 label/unit 展示（渠道自行翻译口径）。
-    quota: RwLock<Option<QuotaSnapshot>>,
     /// 越大越先被选中：成本档（免费 > 付费）。
     pub priority: u32,
     /// 同档内的容量份额。
@@ -81,7 +82,6 @@ pub struct PoolAccount {
     pub priority_override: Option<u32>,
     pub weight_override: Option<u32>,
     /// 并发上限（面板可调）。原子：PoolAccount 常在 Arc 后面共享，&self 也要能改。
-    max_inflight: AtomicU32,
     pub proxy_slot: Option<String>,
     /// 这个账号只服务哪些**对外模型名**。空 = 不限制。
     ///
@@ -113,7 +113,7 @@ pub struct PoolAccount {
     /// 上游按出口 IP 限流：所有账号共用一个 IP 时，几十个号叠在一起
     /// 很容易被判定成异常流量。按账号绑不同代理可以把风险摊开。
     pub proxy: Option<crate::gateway::storage::ProxyRecord>,
-    pub runtime: AccountRuntime,
+    pub runtime: Arc<AccountRuntime>,
 }
 
 impl PoolAccount {
@@ -124,13 +124,10 @@ impl PoolAccount {
             enabled: true,
             requires_credential: true,
             static_credential: false,
-            credentials: RwLock::new(Credential::default()),
-            quota: RwLock::new(None),
             priority: 100,
             weight: 1,
             priority_override: None,
             weight_override: None,
-            max_inflight: AtomicU32::new(1),
             proxy_slot: None,
             model_allow: Vec::new(),
             model_rename: std::collections::BTreeMap::new(),
@@ -139,7 +136,13 @@ impl PoolAccount {
             platform: String::new(),
             options: serde_json::Value::Null,
             proxy: None,
-            runtime: AccountRuntime::default(),
+            runtime: Arc::new(AccountRuntime {
+                credentials: RwLock::new(Credential::default()),
+                quota: RwLock::new(None),
+                max_inflight: AtomicU32::new(1),
+                ..AccountRuntime::default()
+            }),
+            membership_enabled: true,
         }
     }
 
@@ -163,35 +166,35 @@ impl PoolAccount {
     }
 
     pub fn credentials(&self) -> Credential {
-        self.credentials
+        self.runtime.credentials
             .read()
             .map(|credentials| credentials.clone())
             .unwrap_or_default()
     }
 
     pub fn quota(&self) -> Option<QuotaSnapshot> {
-        self.quota
+        self.runtime.quota
             .read()
             .ok()
             .and_then(|quota| quota.clone())
     }
 
     pub fn set_quota(&self, quota: Option<QuotaSnapshot>) {
-        if let Ok(mut slot) = self.quota.write() {
+        if let Ok(mut slot) = self.runtime.quota.write() {
             *slot = quota;
         }
     }
 
     /// 落库/刷新成功后整体替换凭据（refresh_token 会轮换，不能只换一半）。
     pub fn set_credentials(&self, credential: Credential) {
-        if let Ok(mut slot) = self.credentials.write() {
+        if let Ok(mut slot) = self.runtime.credentials.write() {
             *slot = credential;
         }
     }
 
     /// 实时可用性：启用 ∧ 有凭据（若该渠道需要）∧ 不在冷却/停放/熔断窗口 ∧ 该模型没被单独冷掉。
     pub fn is_ready(&self, model: &str, now: u64) -> bool {
-        if !self.enabled {
+        if !self.enabled || !self.membership_enabled {
             return false;
         }
         // 用 `is_present()` 而不是只看 access_token：CodeArts 的长期 AK/SK 没有 token。
@@ -354,11 +357,11 @@ impl PoolAccount {
     /// 只清运行态：凭据、额度、启停都不动。
     /// 调整并发上限（面板可改）。不低于 1；在飞中的请求不受影响（只影响新请求）。
     pub fn set_max_inflight(&self, value: u32) {
-        self.max_inflight.store(value.max(1), Ordering::SeqCst);
+        self.runtime.max_inflight.store(value.max(1), Ordering::SeqCst);
     }
 
     pub fn max_inflight(&self) -> u32 {
-        self.max_inflight.load(Ordering::SeqCst)
+        self.runtime.max_inflight.load(Ordering::SeqCst)
     }
 
     pub fn reset_runtime(&self) {

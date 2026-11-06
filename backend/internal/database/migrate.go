@@ -113,6 +113,10 @@ ALTER TABLE accounts
     FOREIGN KEY (channel_id) REFERENCES channels (id) ON DELETE SET NULL`).Error
 		},
 	},
+	{
+		version: "20261106_account_groups",
+		up:      migrateAccountGroups,
+	},
 }
 
 // Migrate 执行迁移：先 AutoMigrate 建/补表结构，再跑未执行的显式迁移。

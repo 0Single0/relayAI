@@ -39,6 +39,7 @@ export type AccountPayload = {
    * 不传表示不迁移（与"传空串"不同：空串会被后端拒绝）。
    */
   channelId?: string;
+  groups?: Array<{ groupId: string; enabled: boolean; priority?: number | null; weight?: number | null }>;
 };
 
 /** 手动清掉该账号的冷却（账号级 + 模型级）。 */
@@ -59,6 +60,7 @@ export const deleteAccount = (id: number) =>
  */
 export const createCredentialAccount = (payload: {
   channelId: string;
+  groups?: Array<{ groupId: string; enabled: boolean }>;
   uid: string;
   nickname: string;
   apiKey: string;
@@ -103,11 +105,11 @@ export type LoginPollResult = {
   account?: Account;
 };
 
-export const pollLogin = (channelId: string, state: string, platform?: string, options?: Record<string, unknown>) =>
+export const pollLogin = (channelId: string, state: string, platform?: string, options?: Record<string, unknown>, groups?: Array<{ groupId: string; enabled: boolean }>) =>
   APIRequest<LoginPollResult>({
     url: `/channels/${encodeURIComponent(channelId || "__unassigned__")}/login/poll`,
     method: "POST",
-    data: { state, platform, options },
+    data: { state, platform, options, groups },
   });
 
 export const completeLogin = (
@@ -116,11 +118,12 @@ export const completeLogin = (
   callback: string,
   platform?: string,
   options?: Record<string, unknown>,
+  groups?: Array<{ groupId: string; enabled: boolean }>,
 ) =>
   APIRequest<LoginPollResult>({
     url: `/channels/${encodeURIComponent(channelId || "__unassigned__")}/login/complete`,
     method: "POST",
-    data: { state, callback, platform, options },
+    data: { state, callback, platform, options, groups },
   });
 
 export const refreshCredential = (id: number) =>

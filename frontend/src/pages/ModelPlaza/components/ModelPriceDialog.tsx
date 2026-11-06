@@ -11,7 +11,9 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Switch } from "@/components/ui/switch";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
+import { modelProviderLabel, modelProviders } from "@/pages/Channels/shared";
 import { getRequestErrorMessage } from "@/utils/request";
 
 const inputClass = cn(
@@ -48,6 +50,7 @@ export const ModelPriceDialog = ({
   const [outputPrice, setOutputPrice] = useState("");
   const [cacheReadPrice, setCacheReadPrice] = useState("");
   const [modelRatio, setModelRatio] = useState("");
+  const [modelProvider, setModelProvider] = useState("");
   const [enabled, setEnabled] = useState(true);
   const [pending, setPending] = useState(false);
 
@@ -60,6 +63,7 @@ export const ModelPriceDialog = ({
       setCacheReadPrice(model.cacheReadPrice > 0 ? model.cacheReadPrice.toFixed(2) : "");
       setModelRatio(model.modelRatio > 0 ? String(model.modelRatio) : "1");
       setEnabled(model.enabled);
+      setModelProvider(model.modelProvider ?? "");
 
     }
   }, [model]);
@@ -94,6 +98,7 @@ export const ModelPriceDialog = ({
         outputPrice: output,
         cacheReadPrice: cache,
         modelRatio: ratio,
+        modelProvider,
         enabled,
       });
       onSaved();
@@ -139,6 +144,8 @@ export const ModelPriceDialog = ({
               />
             </div>
           </div>
+
+          <div className="flex flex-col gap-1"><label id="model-provider" className="text-xs font-medium">模型厂商</label><Select value={modelProvider || "__unclassified__"} onValueChange={value => setModelProvider(value === "__unclassified__" ? "" : value)}><SelectTrigger aria-labelledby="model-provider"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="__unclassified__">未标注</SelectItem>{modelProviders.map(provider => <SelectItem key={provider.value} value={provider.value}>{modelProviderLabel(provider.value)}</SelectItem>)}</SelectContent></Select><p className="text-[11px] text-muted-foreground">分组发布校验会使用此字段。</p></div>
 
           <div className="grid grid-cols-2 gap-3">
             <div className="flex flex-col gap-1">

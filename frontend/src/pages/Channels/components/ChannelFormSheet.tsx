@@ -20,6 +20,7 @@ import {
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { ChannelStatusSettings, type StatusSettingsValue } from "@/pages/Channels/components/ChannelStatusSettings";
+import { modelProviders } from "@/pages/Channels/shared";
 import { cn } from "@/lib/utils";
 import { getRequestErrorMessage } from "@/utils/request";
 
@@ -33,6 +34,7 @@ type ChannelFormSheetProps = {
 type FormState = {
   id: string;
   name: string;
+  modelProvider: string;
   enabled: boolean;
   priority: string;
   weight: string;
@@ -63,13 +65,14 @@ type FormState = {
 const emptyForm: FormState = {
   id: "",
   name: "",
+  modelProvider: "",
   enabled: true,
   priority: "100",
   weight: "1",
   channelRatio: "1.00",
   concurrencyLimit: "",
   rateLimitQps: "",
-  adapter: "workbuddy",
+  adapter: "custom",
   realm: "cn",
   status: { visible: false, probeModels: [] },
 };
@@ -77,6 +80,7 @@ const emptyForm: FormState = {
 const fromChannel = (channel: Channel): FormState => ({
   id: channel.id,
   name: channel.name,
+  modelProvider: channel.modelProvider ?? "",
   enabled: channel.enabled,
   priority: String(channel.priority),
   weight: String(channel.weight),
@@ -165,6 +169,7 @@ export const ChannelFormSheet = ({
     if (!form.name.trim()) {
       next.name = "名称不能为空";
     }
+    if (!form.modelProvider) next.modelProvider = "请选择模型厂商";
 
 
     const ratio = Number(form.channelRatio);
@@ -179,14 +184,15 @@ export const ChannelFormSheet = ({
   const buildPayload = (): ChannelPayload => ({
     id: form.id.trim(),
     name: form.name.trim(),
-    // 分组的平台及版本用于限制可归入的账号。
+    modelProvider: form.modelProvider,
+    // 保留旧配置字段用于登录与运营任务兼容；新分组适配器由账号决定。
     adapter: form.adapter,
     enabled: form.enabled,
     // 分组级 priority / weight 在界面上已移除（Key 与分组 1:1，永不参与比较），
     // 但接口仍要求这两个字段，固定给中性值。
     priority: 100,
     weight: 1,
-    options: form.adapter === "workbuddy" ? { realm: form.realm } : {},
+    options: channel?.options ?? {},
     channelRatio: Number(form.channelRatio),
     concurrencyLimit: form.concurrencyLimit.trim() ? Number(form.concurrencyLimit) : null,
     rateLimitQps: form.rateLimitQps.trim() ? Number(form.rateLimitQps) : null,
@@ -231,9 +237,7 @@ export const ChannelFormSheet = ({
       <DialogContent className="max-w-lg">
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
-          <DialogDescription>
-            分组用于配置倍率与限流，仅接收相同平台及版本的账号。API Key 在「新建账号」中填写。
-          </DialogDescription>
+          <DialogDescription>分组按模型厂商组织；一个账号可以加入多个厂商或策略分组。</DialogDescription>
         </DialogHeader>
 
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
@@ -262,53 +266,12 @@ export const ChannelFormSheet = ({
             />
           </Field>
 
-          {/*
-            平台：决定用哪套上游协议，也决定运营能力。
-            只有 WorkBuddy 有「任务 / 签到」，而且只限国内版 ——
-            选错这里，任务菜单会整个消失（不报错，只是没有）。
-          */}
-          <Field
-            label="平台"
-            hint={
-              form.adapter === "workbuddy"
-                ? form.realm === "cn"
-                  ? "国内版：支持任务与签到"
-                  : "国际版：无任务，只有每日对话"
-                : form.adapter === "trae" ? "Trae：支持签到" : "自定义供应商：无运营能力"
-            }
-          >
-            <Select disabled={isEdit} value={form.adapter} onValueChange={(next) => update("adapter", next as Channel["adapter"])}>
-              <SelectTrigger aria-label="平台">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="workbuddy">WorkBuddy</SelectItem>
-                <SelectItem value="trae">Trae</SelectItem>
-                <SelectItem value="custom">自定义供应商</SelectItem>
-              </SelectContent>
+          <Field label="模型厂商" error={errors.modelProvider} hint="分组只发布已标注为该厂商的模型。">
+            <Select value={form.modelProvider || undefined} onValueChange={(next) => update("modelProvider", next)}>
+              <SelectTrigger aria-label="模型厂商" aria-invalid={Boolean(errors.modelProvider)}><SelectValue placeholder="选择模型厂商" /></SelectTrigger>
+              <SelectContent>{modelProviders.map((provider) => <SelectItem key={provider.value} value={provider.value}>{provider.label}</SelectItem>)}</SelectContent>
             </Select>
           </Field>
-
-          {form.adapter === "workbuddy" ? (
-            <Field
-              label="版本"
-              hint="国内版与国际版的上游域名不同，账号不能混用"
-            >
-              <Select
-                disabled={isEdit}
-                value={form.realm}
-                onValueChange={(next) => update("realm", next as "cn" | "intl")}
-              >
-                <SelectTrigger aria-label="版本">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="cn">国内版</SelectItem>
-                  <SelectItem value="intl">国际版</SelectItem>
-                </SelectContent>
-              </Select>
-            </Field>
-          ) : null}
 
           <Field label="启用">
             <div className="flex h-8 items-center gap-2">

@@ -13,6 +13,8 @@ import (
 // Account 是账号的管理面视图。
 type Account struct {
 	ID               int64           `json:"id"`
+	ChannelIDs       []string        `json:"channelIds"`
+	Groups           []AccountGroup  `json:"groups"`
 	ChannelID        string          `json:"channelId"`
 	ChannelName      string          `json:"channelName"`
 	Adapter          string          `json:"adapter"`
@@ -112,7 +114,7 @@ func (s *Store) ListAccounts(ctx context.Context, query AccountQuery) ([]Account
 	args := make([]any, 0, 4)
 	if query.ChannelID != "" {
 		args = append(args, query.ChannelID)
-		where += fmt.Sprintf(" AND a.channel_id = $%d", len(args))
+		where += fmt.Sprintf(" AND EXISTS (SELECT 1 FROM account_groups ag WHERE ag.account_id = a.id AND ag.group_id = $%d)", len(args))
 	}
 	if query.Keyword != "" {
 		args = append(args, "%"+query.Keyword+"%")
@@ -174,6 +176,9 @@ func (s *Store) ListAccounts(ctx context.Context, query AccountQuery) ([]Account
 		list = append(list, account)
 	}
 
+	if err := s.attachAccountGroups(ctx, list); err != nil {
+		return nil, 0, fmt.Errorf("查询账号分组失败: %w", err)
+	}
 	return list, int(total), nil
 }
 
@@ -220,21 +225,26 @@ func (s *Store) GetAccount(ctx context.Context, id int64) (*Account, error) {
 	account.ModelRename = rawJSONOrEmpty(row.ModelRename)
 	account.Options = rawJSONOrEmpty(row.Options)
 
-	return &account, nil
+	list := []Account{account}
+	if err := s.attachAccountGroups(ctx, list); err != nil {
+		return nil, err
+	}
+	return &list[0], nil
 }
 
 // AccountInput 是更新账号的输入。
 type AccountInput struct {
-	Nickname         *string         `json:"nickname"`
-	Enabled          *bool           `json:"enabled"`
-	PriorityOverride *int            `json:"priorityOverride"`
-	WeightOverride   *int            `json:"weightOverride"`
-	MaxInflight      *int            `json:"maxInflight"`
-	ModelAllow       *[]string       `json:"modelAllow"`
-	ModelRename      json.RawMessage `json:"modelRename"`
-	Options          json.RawMessage `json:"options"`
-	APIKey           *string         `json:"apiKey"`
-	CredentialCipher []byte          `json:"-"`
+	Groups           *[]AccountGroupInput `json:"groups"`
+	Nickname         *string              `json:"nickname"`
+	Enabled          *bool                `json:"enabled"`
+	PriorityOverride *int                 `json:"priorityOverride"`
+	WeightOverride   *int                 `json:"weightOverride"`
+	MaxInflight      *int                 `json:"maxInflight"`
+	ModelAllow       *[]string            `json:"modelAllow"`
+	ModelRename      json.RawMessage      `json:"modelRename"`
+	Options          json.RawMessage      `json:"options"`
+	APIKey           *string              `json:"apiKey"`
+	CredentialCipher []byte               `json:"-"`
 	// Presence distinguishes omitted overrides from an explicit reset to NULL.
 	MaxInflightSet      bool `json:"-"`
 	PriorityOverrideSet bool `json:"-"`
@@ -255,7 +265,7 @@ type AccountInput struct {
 }
 
 // UpdateAccount 更新账号。
-func (s *Store) UpdateAccount(ctx context.Context, id int64, input AccountInput) (*Account, error) {
+func (s *Store) updateAccountFields(ctx context.Context, id int64, input AccountInput) (*Account, error) {
 	sets := make([]string, 0, 6)
 	args := make([]any, 0, 8)
 	arg := func(value any) string {
@@ -444,7 +454,11 @@ func (s *Store) FindAccountByUID(ctx context.Context, channelID, uid string) (*A
 	account.ModelRename = rawJSONOrEmpty(row.ModelRename)
 	account.Options = rawJSONOrEmpty(row.Options)
 
-	return &account, nil
+	list := []Account{account}
+	if err := s.attachAccountGroups(ctx, list); err != nil {
+		return nil, err
+	}
+	return &list[0], nil
 }
 
 // formatTime 把 pgx 返回的时间转成 RFC3339。

@@ -45,7 +45,7 @@ func TestAutoMigrateFreshSchema(t *testing.T) {
 		"channels", "users", "models", "proxies", "api_keys", "accounts",
 		"redeem_codes", "settings", "channel_caps", "affinity_bindings",
 		"user_sessions", "balance_transactions", "usage_logs", "usage_payloads",
-		"task_runs", "task_run_items",
+		"task_runs", "task_run_items", "account_groups",
 	} {
 		if !db.Migrator().HasTable(name) {
 			t.Errorf("表 %s 未创建", name)

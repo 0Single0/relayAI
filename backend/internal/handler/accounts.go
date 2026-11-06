@@ -330,10 +330,11 @@ func registerAccounts(mux *http.ServeMux, ctx *svc.ServiceContext) {
 	// 渠道只负责"这个号算在哪个计价分组里"。
 	mux.HandleFunc("POST /accounts", func(w http.ResponseWriter, r *http.Request) {
 		var input struct {
-			ChannelID string `json:"channelId"`
-			UID       string `json:"uid"`
-			Nickname  string `json:"nickname"`
-			APIKey    string `json:"apiKey"`
+			ChannelID string                    `json:"channelId"`
+			Groups    []store.AccountGroupInput `json:"groups"`
+			UID       string                    `json:"uid"`
+			Nickname  string                    `json:"nickname"`
+			APIKey    string                    `json:"apiKey"`
 			// 平台：workbuddy / trae / custom / fake。
 			Platform string `json:"platform"`
 			// 上游地址与协议在**账号**上：一份计价策略（渠道）下可以有多个
@@ -402,6 +403,9 @@ func registerAccounts(mux *http.ServeMux, ctx *svc.ServiceContext) {
 				return
 			}
 		}
+		if len(input.Groups) == 0 && input.ChannelID != "" {
+			input.Groups = []store.AccountGroupInput{{GroupID: input.ChannelID, Enabled: true}}
+		}
 		if err := ctx.Store.ValidateAccountChannel(r.Context(), input.ChannelID, input.Platform, input.Options); err != nil {
 			httpx.FailError(w, r, err)
 			return
@@ -427,6 +431,14 @@ func registerAccounts(mux *http.ServeMux, ctx *svc.ServiceContext) {
 		if err != nil {
 			httpx.FailError(w, r, err)
 			return
+		}
+		if input.Groups != nil {
+			account, err = ctx.Store.UpdateAccount(r.Context(), account.ID, store.AccountInput{Groups: &input.Groups})
+			if err != nil {
+				httpx.FailError(w, r, err)
+				return
+			}
+			notifyReload(r, ctx)
 		}
 
 		httpx.OK(w, account)
@@ -468,6 +480,7 @@ func registerAccounts(mux *http.ServeMux, ctx *svc.ServiceContext) {
 			State    string          `json:"state"`
 			Platform string          `json:"platform"`
 			Options  json.RawMessage `json:"options"`
+			Groups []store.AccountGroupInput `json:"groups"`
 		}
 		if err := httpx.Decode(r, &input); err != nil {
 			httpx.Fail(w, http.StatusBadRequest, err.Error())
@@ -485,6 +498,7 @@ func registerAccounts(mux *http.ServeMux, ctx *svc.ServiceContext) {
 		}
 
 		if result.State == "ready" {
+			if len(input.Groups) > 0 { if err := assignLoginGroups(r.Context(), ctx, result.UID, input.Groups); err != nil { httpx.FailError(w, r, err); return } }
 			notifyReload(r, ctx)
 		}
 		httpx.OK(w, result)
@@ -496,6 +510,7 @@ func registerAccounts(mux *http.ServeMux, ctx *svc.ServiceContext) {
 			Callback string          `json:"callback"`
 			Platform string          `json:"platform"`
 			Options  json.RawMessage `json:"options"`
+			Groups []store.AccountGroupInput `json:"groups"`
 		}
 		if err := httpx.Decode(r, &input); err != nil {
 			httpx.Fail(w, http.StatusBadRequest, err.Error())
@@ -520,10 +535,18 @@ func registerAccounts(mux *http.ServeMux, ctx *svc.ServiceContext) {
 		}
 
 		if result.State == "ready" {
+			if len(input.Groups) > 0 { if err := assignLoginGroups(r.Context(), ctx, result.UID, input.Groups); err != nil { httpx.FailError(w, r, err); return } }
 			notifyReload(r, ctx)
 		}
 		httpx.OK(w, result)
 	})
+}
+
+func assignLoginGroups(ctx context.Context, svcCtx *svc.ServiceContext, uid string, groups []store.AccountGroupInput) error {
+	account, err := svcCtx.Store.FindAccountByUID(ctx, "", uid)
+	if err != nil { return err }
+	_, err = svcCtx.Store.UpdateAccount(ctx, account.ID, store.AccountInput{Groups: &groups})
+	return err
 }
 
 func loginChannelID(id string) string {
@@ -545,8 +568,8 @@ func attachUsage(r *http.Request, ctx *svc.ServiceContext, accounts []store.Acco
 	}
 
 	for index := range accounts {
-		key := accounts[index].ChannelID + "/" + accounts[index].UID
-		if item, ok := usage[key]; ok {
+		if item, ok := usage[accounts[index].UID]; ok {
+			item.ChannelID = accounts[index].ChannelID
 			accounts[index].Usage = &item
 		} else {
 			// 明确给一个全 0 的占位：前端的"今日 0 次 / 0 tok"就不必自己造默认值。

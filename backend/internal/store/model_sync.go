@@ -32,20 +32,21 @@ func (s *Store) UpsertCatalogModel(ctx context.Context, model CatalogModelInput)
 	const query = `
 		INSERT INTO models (
 		    canonical_name, display_name, context_window, max_output, capabilities,
-		    input_price, output_price, cache_read_price, model_ratio, enabled
-		) VALUES ($1, $2, $3, $4, $5, 0, 0, 0, 1, true)
+		    input_price, output_price, cache_read_price, model_ratio, enabled, model_provider
+		) VALUES ($1, $2, $3, $4, $5, 0, 0, 0, 1, true, $6)
 		ON CONFLICT (canonical_name) DO UPDATE SET
 		    display_name = COALESCE(NULLIF(EXCLUDED.display_name, ''), models.display_name),
 		    context_window = COALESCE(EXCLUDED.context_window, models.context_window),
 		    max_output = COALESCE(EXCLUDED.max_output, models.max_output),
-		    capabilities = EXCLUDED.capabilities
+		    capabilities = EXCLUDED.capabilities,
+			model_provider = COALESCE(NULLIF(models.model_provider, ''), EXCLUDED.model_provider)
 		-- 刻意**不动** input_price / output_price / model_ratio / enabled：
 		-- 同步只负责"有哪些模型、多长上下文"，定价与启停是人的决定。
 		`
 
 	if _, err := s.exec(ctx, query,
 		model.CanonicalName, model.DisplayName,
-		model.ContextWindow, model.MaxOutput, capabilities,
+		model.ContextWindow, model.MaxOutput, capabilities, builtinModelProvider(model.CanonicalName),
 	); err != nil {
 		return fmt.Errorf("写入模型目录失败: %w", err)
 	}

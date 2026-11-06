@@ -25,6 +25,7 @@ use crate::gateway::{
 #[derive(Debug, Clone)]
 pub struct AccountRecord {
     pub channel_id: String,
+    pub groups: Vec<AccountMembership>,
     pub uid: String,
     pub nickname: String,
     pub enabled: bool,
@@ -55,6 +56,14 @@ pub struct AccountRecord {
     /// 上游按出口 IP 限流：所有账号共用一个 IP 时，几十个号叠在一起
     /// 很容易被判定成异常流量，表现为"偶发 429/403"。
     pub proxy: Option<ProxyRecord>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct AccountMembership {
+    pub group_id: String,
+    pub enabled: bool,
+    pub priority: Option<u32>,
+    pub weight: Option<u32>,
 }
 
 /// 一条出站代理。
@@ -181,7 +190,7 @@ impl Storage {
     /// 加载所有渠道。
     pub async fn list_channels(&self) -> Result<Vec<ChannelConfig>, GatewayError> {
         let rows = sqlx::query_as::<_, ChannelRow>(
-            "SELECT id, name, adapter, enabled, priority, weight, options,
+            "SELECT id, name, adapter, model_provider, enabled, priority, weight, options,
                     channel_ratio::float8 AS channel_ratio,
                     COALESCE(model_allow, ARRAY[]::text[]) AS model_allow
              FROM channels ORDER BY id",
@@ -195,6 +204,7 @@ impl Storage {
             .map(|row| ChannelConfig {
                 id: row.id,
                 adapter: row.adapter,
+                model_provider: row.model_provider,
                 display_name: row.name,
                 enabled: row.enabled,
                 priority: row.priority.max(0) as u32,
@@ -204,6 +214,13 @@ impl Storage {
                 model_allow: row.model_allow,
             })
             .collect())
+    }
+
+    pub async fn model_providers(&self) -> Result<std::collections::HashMap<String, String>, GatewayError> {
+        let rows = sqlx::query_as::<_, (String, String)>(
+            "SELECT canonical_name, model_provider FROM models WHERE model_provider <> ''",
+        ).fetch_all(&self.pool).await.map_err(db_error)?;
+        Ok(rows.into_iter().collect())
     }
 
     /// 查一个渠道的 adapter（平台名）。
@@ -231,6 +248,7 @@ impl Storage {
     pub async fn list_accounts(&self) -> Result<Vec<AccountRecord>, GatewayError> {
         let rows = sqlx::query_as::<_, AccountRow>(
             "SELECT a.channel_id, a.uid, a.nickname, a.enabled,
+                    COALESCE((SELECT jsonb_agg(jsonb_build_object('group_id', ag.group_id, 'enabled', ag.enabled, 'priority', ag.priority, 'weight', ag.weight) ORDER BY ag.group_id) FROM account_groups ag WHERE ag.account_id = a.id), '[]'::jsonb) AS groups,
                     a.priority_override, a.weight_override, a.max_inflight,
                     a.credential_cipher, a.model_allow, a.model_rename,
                     a.base_url, a.protocol, a.platform, a.options,
@@ -297,6 +315,7 @@ impl Storage {
 
                 AccountRecord {
                     channel_id: row.channel_id.unwrap_or_default(),
+                    groups: serde_json::from_value(row.groups.clone()).unwrap_or_default(),
                     uid: row.uid,
                     nickname: row.nickname,
                     enabled: row.enabled,
@@ -1008,6 +1027,7 @@ struct ChannelRow {
     id: String,
     name: String,
     adapter: String,
+    model_provider: String,
     enabled: bool,
     priority: i32,
     weight: i32,
@@ -1026,6 +1046,7 @@ struct AccountRow {
       而其余代码继续按 String 处理，改动面最小。
     */
     channel_id: Option<String>,
+    groups: serde_json::Value,
     uid: String,
     nickname: String,
     enabled: bool,

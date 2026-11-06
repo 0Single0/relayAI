@@ -56,6 +56,7 @@ func registerModels(mux *http.ServeMux, ctx *svc.ServiceContext) {
 
 		type publicModel struct {
 			Name          string          `json:"name"`
+			ModelProvider string          `json:"modelProvider"`
 			DisplayName   string          `json:"displayName"`
 			ContextWindow *int            `json:"contextWindow"`
 			MaxOutput     *int            `json:"maxOutput"`
@@ -79,6 +80,7 @@ func registerModels(mux *http.ServeMux, ctx *svc.ServiceContext) {
 			}
 			out = append(out, publicModel{
 				Name:           model.CanonicalName,
+				ModelProvider:  model.ModelProvider,
 				DisplayName:    model.DisplayName,
 				ContextWindow:  model.ContextWindow,
 				MaxOutput:      model.MaxOutput,

@@ -31,7 +31,6 @@ import {
   outboundOptions,
   platformOptions,
   platformParts,
-  platformFromParts,
   upstreamProtocolOptions,
 } from "@/pages/Channels/shared";
 import { cn } from "@/lib/utils";
@@ -70,6 +69,7 @@ export const CreateAccountDrawer = ({
   const [channels, setChannels] = useState<Channel[]>([]);
   const [platform, setPlatform] = useState("workbuddy-cn");
   const [channelId, setChannelId] = useState(defaultChannelId ?? "");
+  const [groupIds, setGroupIds] = useState<string[]>(defaultChannelId ? [defaultChannelId] : []);
   const [nickname, setNickname] = useState("");
   const [apiKey, setApiKey] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
@@ -109,14 +109,14 @@ export const CreateAccountDrawer = ({
       setCallback("");
       setModels([]);
       setChannelId(defaultChannelId ?? "");
+      setGroupIds(defaultChannelId ? [defaultChannelId] : []);
     }
   }, [defaultChannelId, open]);
 
   useEffect(() => {
     if (defaultChannelId && channels.some((c) => c.id === defaultChannelId)) {
       setChannelId(defaultChannelId);
-      const channel = channels.find((item) => item.id === defaultChannelId)!;
-      setPlatform(platformFromParts(channel.adapter, channel.options?.realm));
+      setGroupIds(current => current.includes(defaultChannelId) ? current : [defaultChannelId, ...current]);
     }
     /*
       不再自动选中第一个分组。
@@ -134,8 +134,7 @@ export const CreateAccountDrawer = ({
   // 具体平台已经带版本，这里不再需要单独的 realm 状态。
   const parts = platformParts(platform);
   const isWorkbuddy = parts.adapter === "workbuddy";
-  const compatibleChannels = useMemo(() => channels.filter((channel) => channel.enabled &&
-    platformFromParts(channel.adapter, channel.options?.realm) === platformFromParts(parts.adapter, parts.realm)), [channels, parts.adapter, parts.realm]);
+  const compatibleChannels = useMemo(() => channels.filter((channel) => channel.enabled), [channels]);
 
 
   const submitApiKey = useCallback(async () => {
@@ -161,6 +160,7 @@ export const CreateAccountDrawer = ({
       const target = channelId;
       await createCredentialAccount({
         channelId: target,
+        groups: groupIds.map(groupId => ({ groupId, enabled: true })),
         // uid 用 Key 前缀 + 时间戳：自定义供应商没有上游账号概念，
         // 需要一个内部唯一标识来区分多条 Key。
         uid: `${apiKey.trim().slice(0, 6)}-${Date.now().toString(36)}`,
@@ -180,7 +180,7 @@ export const CreateAccountDrawer = ({
     } finally {
       setPending(false);
     }
-  }, [apiKey, baseUrl, channelId, models, nickname, onCreated, onOpenChange, protocol]);
+  }, [apiKey, baseUrl, channelId, groupIds, models, nickname, onCreated, onOpenChange, protocol]);
 
   const beginLogin = useCallback(async () => {
     setPending(true);
@@ -231,7 +231,7 @@ export const CreateAccountDrawer = ({
 
     const tick = async () => {
       try {
-        const response = await pollLogin(channelId, ticket.state, parts.adapter, { realm: parts.realm, outbound_identity: outbound });
+        const response = await pollLogin(channelId, ticket.state, parts.adapter, { realm: parts.realm, outbound_identity: outbound }, groupIds.map(groupId => ({ groupId, enabled: true })));
         if (cancelled) {
           return;
         }
@@ -262,7 +262,7 @@ export const CreateAccountDrawer = ({
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [channelId, onCreated, onOpenChange, open, outbound, parts.adapter, parts.realm, ticket]);
+  }, [channelId, groupIds, onCreated, onOpenChange, open, outbound, parts.adapter, parts.realm, ticket]);
 
   const submitCallback = useCallback(async () => {
     if (!ticket || !callback.trim()) {
@@ -277,6 +277,7 @@ export const CreateAccountDrawer = ({
         callback.trim(),
         parts.adapter,
         { realm: parts.realm, outbound_identity: outbound },
+        groupIds.map(groupId => ({ groupId, enabled: true })),
       );
       const result = response.data;
       if (result?.state === "ready") {
@@ -292,7 +293,7 @@ export const CreateAccountDrawer = ({
     } finally {
       setPending(false);
     }
-  }, [callback, channelId, onCreated, onOpenChange, outbound, parts.adapter, parts.realm, ticket]);
+  }, [callback, channelId, groupIds, onCreated, onOpenChange, outbound, parts.adapter, parts.realm, ticket]);
 
   const inputClass = cn(
     "h-8 w-full rounded-md border border-input bg-background px-2.5 text-sm",
@@ -352,25 +353,7 @@ export const CreateAccountDrawer = ({
               "为了建号随便建一个分组"这种更脏的数据。
               未分配的号不参与调度，之后在账号列表里批量分配即可。
             */}
-            {compatibleChannels.length > 0 ? (
-              <Select disabled={pending || ticket !== null} value={channelId || "__none__"} onValueChange={(next) => setChannelId(next === "__none__" ? "" : next)}>
-                <SelectTrigger aria-label="选择计价分组">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="__none__">暂不分配（之后在账号列表里分配）</SelectItem>
-                  {compatibleChannels.map((channel) => (
-                    <SelectItem key={channel.id} value={channel.id}>
-                      {channel.name}（×{channel.channelRatio.toFixed(2)}）
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            ) : (
-              <p className="text-[11px] text-muted-foreground">
-                没有相同平台及版本的分组。账号将保存为「待分配」。
-              </p>
-            )}
+            {compatibleChannels.length > 0 ? <div className="max-h-36 overflow-y-auto rounded-md border p-2">{compatibleChannels.map(channel => <label key={channel.id} className="flex cursor-pointer items-center gap-2 py-1.5 text-xs"><input type="checkbox" disabled={pending || ticket !== null} checked={groupIds.includes(channel.id)} onChange={event => setGroupIds(current => { const next = event.target.checked ? [...current, channel.id] : current.filter(id => id !== channel.id); setChannelId(next[0] ?? ""); return next; })} /><span className="min-w-0 flex-1 truncate">{channel.name}</span><span className="text-muted-foreground">×{channel.channelRatio.toFixed(2)}</span></label>)}</div> : <p className="text-[11px] text-muted-foreground">账号可先保存，之后再加入分组。</p>}
           </div>
 
           {/*

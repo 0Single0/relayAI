@@ -61,7 +61,7 @@ type ChannelHealth struct {
 	// 最近一次探活时刻（RFC3339；从未探过则为 nil）。
 	LastProbeAt *string `json:"lastProbeAt"`
 	// 最近一次**失败**探活的原因原文（没有失败则为 nil）。
-	LastError *string `json:"lastError"`
+	LastError   *string `json:"lastError"`
 	LastErrorAt *string `json:"lastErrorAt"`
 
 	// ProbeModel 是这个分组**探活时使用的模型**（取调度器实际会探的第一个）。
@@ -146,7 +146,7 @@ func (s *Store) listChannelBase(ctx context.Context) ([]ChannelHealth, error) {
 		       ) AS probe_models
 		FROM channels c
 		LEFT JOIN (
-			SELECT channel_id, count(*) AS cnt FROM accounts GROUP BY channel_id
+			SELECT group_id AS channel_id, count(*) AS cnt FROM account_groups GROUP BY group_id
 		) a ON a.channel_id = c.id
 		WHERE COALESCE(c.status_visible, false)
 		ORDER BY c.priority DESC, c.id`
@@ -370,16 +370,16 @@ func roundToInt(value *float64) *int {
 
 // DashboardTotals 是一段区间内的累计指标。
 type DashboardTotals struct {
-	Requests         int64    `json:"requests"`
-	SuccessRate      float64  `json:"successRate"`
-	PromptTokens     int64    `json:"promptTokens"`
-	CompletionTokens int64    `json:"completionTokens"`
-	TotalTokens      int64    `json:"totalTokens"`
-	CachedTokens     int64    `json:"cachedTokens"`
-	UpstreamCost     float64  `json:"upstreamCost"`
-	BilledCost       float64  `json:"billedCost"`
-	AvgTtftMs        *int     `json:"avgTtftMs"`
-	AvgLatencyMs     *int     `json:"avgLatencyMs"`
+	Requests         int64   `json:"requests"`
+	SuccessRate      float64 `json:"successRate"`
+	PromptTokens     int64   `json:"promptTokens"`
+	CompletionTokens int64   `json:"completionTokens"`
+	TotalTokens      int64   `json:"totalTokens"`
+	CachedTokens     int64   `json:"cachedTokens"`
+	UpstreamCost     float64 `json:"upstreamCost"`
+	BilledCost       float64 `json:"billedCost"`
+	AvgTtftMs        *int    `json:"avgTtftMs"`
+	AvgLatencyMs     *int    `json:"avgLatencyMs"`
 }
 
 // ProtocolBucket 是按协议拆分的用量（三种入口各占多少）。
@@ -830,7 +830,7 @@ type AccountUsage struct {
 // 账号列表 50 行时后者就是 50 次往返，页面会明显发顿。
 func (s *Store) ListAccountUsage(ctx context.Context) (map[string]AccountUsage, error) {
 	const query = `
-		SELECT channel_id, account_uid,
+		SELECT '' AS channel_id, account_uid,
 		       count(*) FILTER (WHERE ts >= date_trunc('day', now()))                        AS today_requests,
 		       COALESCE(sum(total_tokens) FILTER (WHERE ts >= date_trunc('day', now())), 0)   AS today_tokens,
 		       COALESCE(sum(billed_cost) FILTER (WHERE ts >= date_trunc('day', now())), 0)::float8 AS today_cost,
@@ -842,7 +842,7 @@ func (s *Store) ListAccountUsage(ctx context.Context) (map[string]AccountUsage, 
 		       max(ts)                                                                        AS last_used
 		FROM usage_logs
 		WHERE NOT is_rejection
-		GROUP BY channel_id, account_uid`
+		GROUP BY account_uid`
 
 	rows, err := s.db.WithContext(ctx).Raw(query).Rows()
 	if err != nil {
@@ -865,7 +865,7 @@ func (s *Store) ListAccountUsage(ctx context.Context) (map[string]AccountUsage, 
 		if lastUsed != nil {
 			item.LastUsedAt = formatTime(lastUsed)
 		}
-		result[item.ChannelID+"/"+item.UID] = item
+		result[item.UID] = item
 	}
 
 	return result, rows.Err()

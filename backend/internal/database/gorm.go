@@ -14,8 +14,9 @@ import (
 // All 返回全部模型，**顺序即建表顺序**。
 //
 // 为什么手工维护顺序而不是靠反射扫描：
-//   · 反射会拿到不确定的顺序，外键（`usage_logs → channels/users`）可能先建子表；
-//   · 显式列表在 review 时能一眼看出"新表加在哪、依赖谁"。
+//
+//	· 反射会拿到不确定的顺序，外键（`usage_logs → channels/users`）可能先建子表；
+//	· 显式列表在 review 时能一眼看出"新表加在哪、依赖谁"。
 //
 // 加新表时**必须**同时加进这里，否则 AutoMigrate 不会创建它。
 func All() []any {
@@ -27,6 +28,7 @@ func All() []any {
 		&models.Proxies{},
 		&models.APIKeys{},
 		&models.Accounts{},
+		&models.AccountGroups{},
 		&models.RedeemCodes{},
 		&models.Settings{},
 		&models.ChannelCaps{},

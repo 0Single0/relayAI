@@ -109,6 +109,7 @@ export const ModelPlazaPage = () => {
         setModels(
           (response.data?.models ?? []).map((item) => ({
             name: item.name,
+            modelProvider: item.modelProvider ?? "",
             displayName: item.displayName,
             contextWindow: item.contextWindow,
             maxOutput: item.maxOutput,

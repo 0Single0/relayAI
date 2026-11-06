@@ -27,11 +27,9 @@ func PlatformIdentity(platform string, options json.RawMessage) string {
 }
 
 func AccountMatchesChannel(account Account, channel Channel) bool {
-	platform := account.Platform
-	if platform == "" {
-		platform = account.Adapter
-	}
-	return PlatformIdentity(platform, account.Options) == PlatformIdentity(channel.Adapter, channel.Options)
+	// Membership no longer depends on the login adapter or region. The gateway
+	// intersects the account's real catalog with the group's provider policy.
+	return true
 }
 
 func (s *Store) ValidateAccountChannel(ctx context.Context, channelID, platform string, options json.RawMessage) error {

@@ -18,6 +18,7 @@ export const listChannelHealth = (days = 7) =>
 export type ChannelPayload = {
   id: string;
   name: string;
+  modelProvider: string;
   adapter: Channel["adapter"];
   enabled: boolean;
   priority: number;

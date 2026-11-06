@@ -83,6 +83,7 @@ func registerCatalog(mux *http.ServeMux, ctx *svc.ServiceContext) {
 
 		type modelView struct {
 			Name           string          `json:"name"`
+			ModelProvider  string          `json:"modelProvider"`
 			DisplayName    string          `json:"displayName"`
 			ContextWindow  *int            `json:"contextWindow"`
 			MaxOutput      *int            `json:"maxOutput"`
@@ -120,6 +121,7 @@ func registerCatalog(mux *http.ServeMux, ctx *svc.ServiceContext) {
 
 			out = append(out, modelView{
 				Name:           model.CanonicalName,
+				ModelProvider:  model.ModelProvider,
 				DisplayName:    model.DisplayName,
 				ContextWindow:  model.ContextWindow,
 				MaxOutput:      model.MaxOutput,

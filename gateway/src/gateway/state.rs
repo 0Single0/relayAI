@@ -452,6 +452,7 @@ impl GatewayState {
         let config = self.config();
         let mut catalogs = Vec::new();
         let mut overrides = Vec::new();
+        let model_providers = self.storage.model_providers().await.unwrap_or_default();
         let groups = self.storage.list_channels().await.unwrap_or_default();
         for channel in groups.iter().filter(|channel| channel.enabled) {
             // Aggregate real assigned accounts, including each custom account's own catalog.
@@ -459,7 +460,10 @@ impl GatewayState {
             let accounts = self.pool.by_channel(&channel.id);
             for account in accounts.iter().filter(|account| account.enabled) {
                 if let Ok(entries) = self.models_for_account(account).await {
-                    for model in entries {
+                    for model in entries.into_iter().filter(|model| {
+                        channel.model_provider.is_empty()
+                            || model_providers.get(&model.id).is_some_and(|provider| provider == &channel.model_provider)
+                    }) {
                         if !channel.model_allow.is_empty() && !channel.model_allow.contains(&model.id) {
                             overrides.push(RouteOverride {
                                 model: model.id.clone(),
@@ -809,42 +813,60 @@ fn build_accounts(
     let per_account = config.concurrency.per_account.max(1);
     records
         .iter()
-        .filter_map(|record| {
+        .flat_map(|record| {
             let platform = record.platform.trim();
             let Some(adapter) = adapters.get(platform) else {
                 warnings.push(format!(
                     "账号 {}/{} 的平台「{}」没有可用适配器，已跳过",
                     record.channel_id, record.uid, platform
                 ));
-                return None;
+                return Vec::new();
             };
-            let mut pooled = PoolAccount::new(record.channel_id.clone(), record.uid.clone());
-            pooled.platform = platform.to_string();
-            pooled.options = record.options.clone();
-            pooled.proxy = record.proxy.clone();
-            pooled.nickname = if record.nickname.is_empty() {
-                record.uid.clone()
-            } else {
-                record.nickname.clone()
-            };
-            pooled.enabled = record.enabled;
-            pooled.requires_credential = adapter.requires_credential();
-            pooled.static_credential = adapter.static_credential();
-            pooled.priority_override = record.priority_override;
-            pooled.weight_override = record.weight_override;
-            pooled.priority = record.priority_override.unwrap_or(100);
-            pooled.weight = record.weight_override.unwrap_or(1);
-            pooled.set_max_inflight(record.max_inflight.unwrap_or(per_account));
-            pooled.model_allow = record.model_allow.clone();
-            pooled.model_rename = record.model_rename.clone();
-            pooled.base_url = record.base_url.clone();
-            pooled.protocol = record.protocol.clone();
-            pooled.platform = record.platform.clone();
-            pooled.options = record.options.clone();
-            if let Some(credential) = &record.credential {
-                pooled.set_credentials(credential.clone());
-            }
-            Some(Arc::new(pooled))
+            let memberships = if record.groups.is_empty() && !record.channel_id.is_empty() {
+                vec![crate::gateway::storage::AccountMembership {
+                    group_id: record.channel_id.clone(), enabled: true, priority: None, weight: None,
+                }]
+            } else { record.groups.clone() };
+            if memberships.is_empty() { return Vec::new(); }
+            let mut base = PoolAccount::new(record.channel_id.clone(), record.uid.clone());
+            base.platform = platform.to_string();
+            base.options = record.options.clone();
+            base.proxy = record.proxy.clone();
+            base.nickname = if record.nickname.is_empty() { record.uid.clone() } else { record.nickname.clone() };
+            base.enabled = record.enabled;
+            base.requires_credential = adapter.requires_credential();
+            base.static_credential = adapter.static_credential();
+            base.priority_override = record.priority_override;
+            base.weight_override = record.weight_override;
+            base.set_max_inflight(record.max_inflight.unwrap_or(per_account));
+            base.model_allow = record.model_allow.clone();
+            base.model_rename = record.model_rename.clone();
+            base.base_url = record.base_url.clone();
+            base.protocol = record.protocol.clone();
+            if let Some(credential) = &record.credential { base.set_credentials(credential.clone()); }
+            let shared_runtime = Arc::clone(&base.runtime);
+            memberships.into_iter().map(move |membership| {
+                let mut pooled = PoolAccount::new(membership.group_id, record.uid.clone());
+                pooled.runtime = Arc::clone(&shared_runtime);
+                pooled.platform = base.platform.clone();
+                pooled.options = base.options.clone();
+                pooled.proxy = base.proxy.clone();
+                pooled.nickname = base.nickname.clone();
+                pooled.enabled = base.enabled;
+                pooled.membership_enabled = membership.enabled;
+                pooled.requires_credential = base.requires_credential;
+                pooled.static_credential = base.static_credential;
+                pooled.priority_override = membership.priority.map(|v| v.max(0));
+                pooled.weight_override = membership.weight.map(|v| v.max(1));
+                pooled.priority = membership.priority.unwrap_or(record.priority_override.unwrap_or(100)).max(0);
+                pooled.weight = membership.weight.unwrap_or(record.weight_override.unwrap_or(1)).max(1);
+                pooled.model_allow = base.model_allow.clone();
+                pooled.model_rename = base.model_rename.clone();
+                pooled.base_url = base.base_url.clone();
+                pooled.protocol = base.protocol.clone();
+                pooled.proxy = base.proxy.clone();
+                Arc::new(pooled)
+            }).collect::<Vec<_>>()
         })
         .collect()
 }

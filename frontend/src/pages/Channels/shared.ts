@@ -1,4 +1,4 @@
-import type { Account, Channel, ChannelAdapter, ChannelOptions } from "@/api/types";
+import type { Account, ChannelAdapter, ChannelOptions } from "@/api/types";
 
 /**
  * 平台（上游适配器）的中文名。
@@ -112,9 +112,20 @@ export const outboundOptions = [
   { value: "vscode", label: "VSCode 插件" },
 ];
 
-export const accountMatchesChannel = (account: Pick<Account, "platform" | "adapter" | "options">, channel: Channel) =>
-  platformFromParts(account.platform || account.adapter, account.options?.realm) ===
-  platformFromParts(channel.adapter, channel.options?.realm);
+export const modelProviders = [
+  { value: "openai", label: "OpenAI" },
+  { value: "anthropic", label: "Anthropic" },
+  { value: "deepseek", label: "DeepSeek" },
+  { value: "google", label: "Google" },
+  { value: "alibaba", label: "阿里云" },
+  { value: "zhipu", label: "智谱" },
+  { value: "moonshot", label: "月之暗面" },
+  { value: "minimax", label: "MiniMax" },
+  { value: "tencent", label: "腾讯" },
+] as const;
+
+export const modelProviderLabel = (provider: string) =>
+  modelProviders.find(item => item.value === provider)?.label ?? provider;
 
 export const upstreamProtocolOptions = [
   { value: "openai-chat", label: "OpenAI Chat Completions" },

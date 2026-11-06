@@ -93,6 +93,7 @@ pub struct ChannelConfig {
     pub id: String,
     /// 适配器类型（注册中心按它建实例）：如 `workbuddy`、`fake`。
     pub adapter: String,
+    pub model_provider: String,
     pub display_name: String,
     pub enabled: bool,
     /// 成本/质量档：越大越先被选中（免费档 > 付费档）。
@@ -112,6 +113,7 @@ impl Default for ChannelConfig {
         Self {
             id: String::new(),
             adapter: String::new(),
+            model_provider: String::new(),
             display_name: String::new(),
             enabled: true,
             priority: 100,

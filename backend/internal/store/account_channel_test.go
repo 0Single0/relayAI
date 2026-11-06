@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-func TestAccountMatchesChannel(t *testing.T) {
+func TestAccountMatchesChannelIgnoresUpstreamAdapter(t *testing.T) {
 	cn := json.RawMessage(`{"realm":"cn"}`)
 	intl := json.RawMessage(`{"realm":"intl"}`)
 	for _, test := range []struct {
@@ -15,8 +15,8 @@ func TestAccountMatchesChannel(t *testing.T) {
 		want    bool
 	}{
 		{"same platform", Account{Platform: "workbuddy", Options: cn}, Channel{Adapter: "workbuddy", Options: cn}, true},
-		{"cross platform", Account{Platform: "workbuddy", Options: cn}, Channel{Adapter: "trae"}, false},
-		{"cross region", Account{Platform: "workbuddy", Options: cn}, Channel{Adapter: "workbuddy", Options: intl}, false},
+		{"cross platform", Account{Platform: "workbuddy", Options: cn}, Channel{Adapter: "trae"}, true},
+		{"cross region", Account{Platform: "workbuddy", Options: cn}, Channel{Adapter: "workbuddy", Options: intl}, true},
 		{"international", Account{Platform: "workbuddy", Options: intl}, Channel{Adapter: "workbuddy", Options: intl}, true},
 		{"legacy platform", Account{Adapter: "workbuddy"}, Channel{Adapter: "workbuddy", Options: cn}, true},
 		{"custom", Account{Platform: "custom"}, Channel{Adapter: "custom"}, true},

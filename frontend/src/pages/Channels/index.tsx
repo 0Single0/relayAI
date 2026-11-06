@@ -24,7 +24,7 @@ import {
 } from "@/components/ui/dialog";
 import { ChannelFormSheet } from "@/pages/Channels/components/ChannelFormSheet";
 import { ChannelModelsDialog } from "@/pages/Channels/components/ChannelModelsDialog";
-import { platformLabel } from "@/pages/Channels/shared";
+import { modelProviderLabel } from "@/pages/Channels/shared";
 import { cn } from "@/lib/utils";
 import { getRequestErrorMessage } from "@/utils/request";
 
@@ -96,9 +96,7 @@ export const ChannelsPage = () => {
       (channel) =>
         channel.name.toLowerCase().includes(trimmed) ||
         channel.id.toLowerCase().includes(trimmed) ||
-        (channel.platforms ?? []).some((platform) =>
-          platform.toLowerCase().includes(trimmed),
-        ),
+        channel.modelProvider.toLowerCase().includes(trimmed),
     );
   }, [channels, keyword]);
 
@@ -176,34 +174,10 @@ export const ChannelsPage = () => {
       ),
     },
     {
-      key: "platforms",
-      header: "平台",
+      key: "provider",
+      header: "模型厂商",
       width: "150px",
-      // 渠道是计价分组，下面可能混不同平台的号 —— 显示的是"这个分组里
-      // 有哪些平台"，而不是"这个渠道是什么类型"（后者已经不存在了）。
-      render: (channel) => {
-        const platforms = channel.platforms ?? [];
-        if (platforms.length === 0) {
-          return <span className="text-xs text-muted-foreground">—</span>;
-        }
-        return (
-          <div className="flex flex-wrap items-center gap-1">
-            {platforms.slice(0, 2).map((platform) => (
-              <StatusBadge
-                key={platform}
-                tone="neutral"
-                label={platformLabel(platform)}
-                dot={false}
-              />
-            ))}
-            {platforms.length > 2 ? (
-              <span className="text-[11px] text-muted-foreground">
-                +{platforms.length - 2}
-              </span>
-            ) : null}
-          </div>
-        );
-      },
+      render: (channel) => channel.modelProvider ? <StatusBadge tone="neutral" label={modelProviderLabel(channel.modelProvider)} dot={false} /> : <span className="text-xs text-muted-foreground">未设置</span>,
     },
     {
       key: "accounts",

@@ -39,8 +39,8 @@ func registerChannels(mux *http.ServeMux, ctx *svc.ServiceContext) {
 			return
 		}
 
-		if input.ID == "" || input.Name == "" || input.Adapter == "" {
-			httpx.Fail(w, http.StatusBadRequest, "渠道 id、名称与类型都不能为空")
+		if input.ID == "" || input.Name == "" || input.ModelProvider == nil || !store.ValidModelProvider(*input.ModelProvider) {
+			httpx.Fail(w, http.StatusBadRequest, "分组 id、名称与模型厂商都不能为空")
 			return
 		}
 		if len(input.ModelAllow) > 0 {

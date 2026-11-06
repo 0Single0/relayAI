@@ -1,18 +1,20 @@
 // Package models 定义全部数据库表结构。
 //
 // 为什么集中在一个包：
-//   · 表之间有外键与复用关系（`usage_logs` 引用 users / api_keys / channels），
-//     分散在各自业务包里会形成循环依赖；
-//   · GORM 的 AutoMigrate 需要一次性拿到**全部**模型才能正确排外键顺序。
+//
+//	· 表之间有外键与复用关系（`usage_logs` 引用 users / api_keys / channels），
+//	  分散在各自业务包里会形成循环依赖；
+//	· GORM 的 AutoMigrate 需要一次性拿到**全部**模型才能正确排外键顺序。
 //
 // 约定（全部显式写，不依赖 GORM 的自动推断）：
-//   · 表名：`TableName()`，与既有 SQL 迁移建出的表名完全一致；
-//   · 列名：`gorm:"column:xxx"`，现有列是 snake_case，
-//     自动转换在 `channel_ratio` / `key_hash` 这类词上会出错；
-//   · 金额：`*float64` + `type:numeric(14,8)`。**不用 float32** ——
-//     曾因 COALESCE 的类型推断把 0.8 截成 0，精度必须显式保住；
-//   · 时间：`time.Time` + `type:timestamptz`，与现有 `timestamp with time zone` 对齐；
-//   · 索引用显式名字，避免 AutoMigrate 生成 `idx_xxx_yyy` 这种与现有不一致的名字。
+//
+//	· 表名：`TableName()`，与既有 SQL 迁移建出的表名完全一致；
+//	· 列名：`gorm:"column:xxx"`，现有列是 snake_case，
+//	  自动转换在 `channel_ratio` / `key_hash` 这类词上会出错；
+//	· 金额：`*float64` + `type:numeric(14,8)`。**不用 float32** ——
+//	  曾因 COALESCE 的类型推断把 0.8 截成 0，精度必须显式保住；
+//	· 时间：`time.Time` + `type:timestamptz`，与现有 `timestamp with time zone` 对齐；
+//	· 索引用显式名字，避免 AutoMigrate 生成 `idx_xxx_yyy` 这种与现有不一致的名字。
 package models
 
 import "time"
@@ -21,10 +23,12 @@ import "time"
 //
 // 平台与凭据属于账号（`Accounts.Platform`），一个分组下可以混不同平台的号。
 type Channels struct {
-	ID       string `gorm:"column:id;primaryKey;type:text" json:"id"`
-	Name     string `gorm:"column:name;type:text;not null" json:"name"`
-	Adapter  string `gorm:"column:adapter;type:text;not null" json:"adapter"`
-	Enabled  bool   `gorm:"column:enabled;not null;default:true" json:"enabled"`
+	ID   string `gorm:"column:id;primaryKey;type:text" json:"id"`
+	Name string `gorm:"column:name;type:text;not null" json:"name"`
+	// Empty only for migrated groups; new groups select a model manufacturer.
+	ModelProvider string `gorm:"column:model_provider;type:text;not null;default:''" json:"modelProvider"`
+	Adapter       string `gorm:"column:adapter;type:text;not null" json:"adapter"`
+	Enabled       bool   `gorm:"column:enabled;not null;default:true" json:"enabled"`
 	/*
 		分组级 priority / weight 保留列但**不参与调度**。
 
@@ -32,12 +36,12 @@ type Channels struct {
 		所以候选集进入路由前就只剩一个分组，这两个值永远不可能被比较。
 		保留是为了兼容既有数据，新代码不该依赖它们。
 	*/
-	Priority  int   `gorm:"column:priority;type:integer;not null;default:100" json:"priority"`
-	Weight    int   `gorm:"column:weight;type:integer;not null;default:1" json:"weight"`
-	Options   JSONB `gorm:"column:options;type:jsonb;not null;default:'{}'" json:"options"`
-	ChRatio   float64 `gorm:"column:channel_ratio;type:numeric(14,8);not null;default:1" json:"channelRatio"`
-	ConcurrencyLimit *int `gorm:"column:concurrency_limit;type:integer" json:"concurrencyLimit"`
-	RateLimitQPS     *int `gorm:"column:rate_limit_qps;type:integer" json:"rateLimitQps"`
+	Priority         int     `gorm:"column:priority;type:integer;not null;default:100" json:"priority"`
+	Weight           int     `gorm:"column:weight;type:integer;not null;default:1" json:"weight"`
+	Options          JSONB   `gorm:"column:options;type:jsonb;not null;default:'{}'" json:"options"`
+	ChRatio          float64 `gorm:"column:channel_ratio;type:numeric(14,8);not null;default:1" json:"channelRatio"`
+	ConcurrencyLimit *int    `gorm:"column:concurrency_limit;type:integer" json:"concurrencyLimit"`
+	RateLimitQPS     *int    `gorm:"column:rate_limit_qps;type:integer" json:"rateLimitQps"`
 	// ModelAllow 为 nil 表示不限制；非 nil 时只暴露这些模型。
 	ModelAllow TextArray `gorm:"column:model_allow;type:text[]" json:"modelAllow"`
 	// ProbeModel 是**旧版单选**探活模型，保留兼容。
@@ -61,7 +65,7 @@ type Channels struct {
 	// 两者互不牵连 —— 否则"临时把某个分组藏起来"会顺带清空它的探活历史。
 	StatusVisible bool      `gorm:"column:status_visible;not null;default:false" json:"statusVisible"`
 	CreatedAt     time.Time `gorm:"column:created_at;not null;default:now()" json:"createdAt"`
-	UpdatedAt  time.Time `gorm:"column:updated_at;not null;default:now()" json:"updatedAt"`
+	UpdatedAt     time.Time `gorm:"column:updated_at;not null;default:now()" json:"updatedAt"`
 }
 
 func (Channels) TableName() string { return "channels" }
@@ -87,9 +91,9 @@ type Accounts struct {
 	//
 	// 单列唯一而不是 (channel_id, uid)：一个上游账号只该在库里出现一次，
 	// 换分组是迁移不是新建。这样"先建号后分配"也不会因为换组而插入重复行。
-	UID        string `gorm:"column:uid;type:text;not null;uniqueIndex:accounts_uid_key" json:"uid"`
-	Nickname   string `gorm:"column:nickname;type:text;not null;default:''" json:"nickname"`
-	Enabled    bool   `gorm:"column:enabled;not null;default:true" json:"enabled"`
+	UID      string `gorm:"column:uid;type:text;not null;uniqueIndex:accounts_uid_key" json:"uid"`
+	Nickname string `gorm:"column:nickname;type:text;not null;default:''" json:"nickname"`
+	Enabled  bool   `gorm:"column:enabled;not null;default:true" json:"enabled"`
 	// CredentialCipher 是加密后的凭据。明文永不落库、永不进日志。
 	CredentialCipher []byte `gorm:"column:credential_cipher;type:bytea" json:"-"`
 	/*
@@ -124,11 +128,11 @@ type Users struct {
 		为什么不存整数分：现有数据与计费链路全部按"元"的小数计算，
 		中途换单位会让历史账单与实收对不上。
 	*/
-	Balance        float64 `gorm:"column:balance;type:numeric(14,8);not null;default:0" json:"balance"`
-	TotalRecharged float64 `gorm:"column:total_recharged;type:numeric(14,8);not null;default:0" json:"totalRecharged"`
-	Role           string  `gorm:"column:role;type:text;not null;default:'user'" json:"role"`
-	Enabled        bool    `gorm:"column:enabled;not null;default:true" json:"enabled"`
-	Source         string  `gorm:"column:source;type:text;not null;default:'password'" json:"source"`
+	Balance        float64    `gorm:"column:balance;type:numeric(14,8);not null;default:0" json:"balance"`
+	TotalRecharged float64    `gorm:"column:total_recharged;type:numeric(14,8);not null;default:0" json:"totalRecharged"`
+	Role           string     `gorm:"column:role;type:text;not null;default:'user'" json:"role"`
+	Enabled        bool       `gorm:"column:enabled;not null;default:true" json:"enabled"`
+	Source         string     `gorm:"column:source;type:text;not null;default:'password'" json:"source"`
 	CreatedAt      time.Time  `gorm:"column:created_at;not null;default:now()" json:"createdAt"`
 	LastLoginAt    *time.Time `gorm:"column:last_login_at" json:"lastLoginAt"`
 }
@@ -140,20 +144,20 @@ func (Users) TableName() string { return "users" }
 // Key 与分组 1:1 强制绑定：`ChannelAllow` 长度必须恰好为 1（handler 层校验）。
 // 允许留空等于允许它走任意通道，那样"便宜的 Key / 稳定的 Key"分流就不成立。
 type APIKeys struct {
-	ID          int64  `gorm:"column:id;primaryKey;autoIncrement" json:"id"`
-	Name        string `gorm:"column:name;type:text;not null" json:"name"`
-	KeyHash     string `gorm:"column:key_hash;type:text;not null;uniqueIndex:idx_api_keys_hash" json:"-"`
-	KeyPrefix   string `gorm:"column:key_prefix;type:text;not null" json:"keyPrefix"`
-	ChannelAllow TextArray `gorm:"column:channel_allow;type:text[]" json:"channelAllow"`
-	ModelAllow   TextArray `gorm:"column:model_allow;type:text[]" json:"modelAllow"`
-	RPMLimit         *int   `gorm:"column:rpm_limit;type:integer" json:"rpmLimit"`
-	DailyTokenLimit  *int64 `gorm:"column:daily_token_limit" json:"dailyTokenLimit"`
-	MaxConcurrency   *int   `gorm:"column:max_concurrency;type:integer" json:"maxConcurrency"`
-	Enabled          bool   `gorm:"column:enabled;not null;default:true" json:"enabled"`
-	ExpiresAt        *time.Time `gorm:"column:expires_at" json:"expiresAt"`
-	LastUsedAt       *time.Time `gorm:"column:last_used_at" json:"lastUsedAt"`
-	CreatedAt        time.Time  `gorm:"column:created_at;not null;default:now()" json:"createdAt"`
-	UserID           *int64     `gorm:"column:user_id" json:"userId"`
+	ID              int64      `gorm:"column:id;primaryKey;autoIncrement" json:"id"`
+	Name            string     `gorm:"column:name;type:text;not null" json:"name"`
+	KeyHash         string     `gorm:"column:key_hash;type:text;not null;uniqueIndex:idx_api_keys_hash" json:"-"`
+	KeyPrefix       string     `gorm:"column:key_prefix;type:text;not null" json:"keyPrefix"`
+	ChannelAllow    TextArray  `gorm:"column:channel_allow;type:text[]" json:"channelAllow"`
+	ModelAllow      TextArray  `gorm:"column:model_allow;type:text[]" json:"modelAllow"`
+	RPMLimit        *int       `gorm:"column:rpm_limit;type:integer" json:"rpmLimit"`
+	DailyTokenLimit *int64     `gorm:"column:daily_token_limit" json:"dailyTokenLimit"`
+	MaxConcurrency  *int       `gorm:"column:max_concurrency;type:integer" json:"maxConcurrency"`
+	Enabled         bool       `gorm:"column:enabled;not null;default:true" json:"enabled"`
+	ExpiresAt       *time.Time `gorm:"column:expires_at" json:"expiresAt"`
+	LastUsedAt      *time.Time `gorm:"column:last_used_at" json:"lastUsedAt"`
+	CreatedAt       time.Time  `gorm:"column:created_at;not null;default:now()" json:"createdAt"`
+	UserID          *int64     `gorm:"column:user_id" json:"userId"`
 	// KeyPlaintext 是用户主动勾选"可见"时才存的明文，其余情况为 NULL。
 	KeyPlaintext *string `gorm:"column:key_plaintext;type:text" json:"keyPlaintext"`
 }
@@ -162,16 +166,17 @@ func (APIKeys) TableName() string { return "api_keys" }
 
 // Models 是模型目录与定价。
 type Models struct {
-	CanonicalName  string    `gorm:"column:canonical_name;primaryKey;type:text" json:"name"`
-	DisplayName    string    `gorm:"column:display_name;type:text;not null;default:''" json:"displayName"`
-	ContextWindow  *int64    `gorm:"column:context_window;type:integer" json:"contextWindow"`
-	MaxOutput      *int64    `gorm:"column:max_output;type:integer" json:"maxOutput"`
-	Capabilities   JSONB     `gorm:"column:capabilities;type:jsonb;not null;default:'{}'" json:"capabilities"`
-	InputPrice     float64   `gorm:"column:input_price;type:numeric(14,8);not null;default:0" json:"inputPrice"`
-	OutputPrice    float64   `gorm:"column:output_price;type:numeric(14,8);not null;default:0" json:"outputPrice"`
-	CacheReadPrice float64   `gorm:"column:cache_read_price;type:numeric(14,8);not null;default:0" json:"cacheReadPrice"`
-	ModelRatio     float64   `gorm:"column:model_ratio;type:numeric(14,8);not null;default:1" json:"modelRatio"`
-	Enabled        bool      `gorm:"column:enabled;not null;default:true" json:"enabled"`
+	CanonicalName  string  `gorm:"column:canonical_name;primaryKey;type:text" json:"name"`
+	ModelProvider  string  `gorm:"column:model_provider;type:text;not null;default:''" json:"modelProvider"`
+	DisplayName    string  `gorm:"column:display_name;type:text;not null;default:''" json:"displayName"`
+	ContextWindow  *int64  `gorm:"column:context_window;type:integer" json:"contextWindow"`
+	MaxOutput      *int64  `gorm:"column:max_output;type:integer" json:"maxOutput"`
+	Capabilities   JSONB   `gorm:"column:capabilities;type:jsonb;not null;default:'{}'" json:"capabilities"`
+	InputPrice     float64 `gorm:"column:input_price;type:numeric(14,8);not null;default:0" json:"inputPrice"`
+	OutputPrice    float64 `gorm:"column:output_price;type:numeric(14,8);not null;default:0" json:"outputPrice"`
+	CacheReadPrice float64 `gorm:"column:cache_read_price;type:numeric(14,8);not null;default:0" json:"cacheReadPrice"`
+	ModelRatio     float64 `gorm:"column:model_ratio;type:numeric(14,8);not null;default:1" json:"modelRatio"`
+	Enabled        bool    `gorm:"column:enabled;not null;default:true" json:"enabled"`
 }
 
 func (Models) TableName() string { return "models" }

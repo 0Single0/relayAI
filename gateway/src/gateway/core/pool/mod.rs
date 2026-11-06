@@ -162,4 +162,18 @@ mod tests {
         assert_eq!(pool.accounts().len(), 1);
         assert_eq!(pool.accounts()[0].key.uid, "u9");
     }
+
+    #[test]
+    fn memberships_share_one_account_concurrency_limit() {
+        let mut first = PoolAccount::new("deepseek-standard", "u1");
+        first.requires_credential = false;
+        first.set_max_inflight(1);
+        let mut second = PoolAccount::new("deepseek-priority", "u1");
+        second.requires_credential = false;
+        second.runtime = Arc::clone(&first.runtime);
+        let first = Arc::new(first);
+        let second = Arc::new(second);
+        let _guard = first.try_acquire().expect("first membership takes the shared slot");
+        assert!(second.try_acquire().is_none(), "another group must not duplicate account capacity");
+    }
 }

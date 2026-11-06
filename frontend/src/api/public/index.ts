@@ -2,6 +2,7 @@ import { APIRequest } from "@/utils/request";
 
 export type PublicModel = {
   name: string;
+  modelProvider: string;
   displayName: string;
   contextWindow: number | null;
   maxOutput: number | null;

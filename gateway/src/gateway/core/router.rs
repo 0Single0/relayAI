@@ -65,6 +65,8 @@ pub fn candidates(
             }
             // 账号级改名：同渠道不同账号可以把同一个对外模型映射到不同上游名。
             let mut route = route.clone();
+            route.priority = account.priority;
+            route.weight = account.weight;
             if let Some(upstream) = account.model_rename.get(public_model) {
                 route.upstream_model = upstream.clone();
             }

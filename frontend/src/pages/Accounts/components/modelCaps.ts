@@ -39,6 +39,7 @@ export const usableModels = (
         contextWindow: definition?.context_length ?? existing?.contextWindow ?? null,
         maxOutput: definition?.max_output_tokens ?? existing?.maxOutput ?? null,
         capabilities: definition ? { ...definition.capabilities, tools: definition.capabilities?.tool_calls } : existing?.capabilities ?? null,
+        modelProvider: existing?.modelProvider ?? "",
         inputPrice: existing?.inputPrice ?? 0, outputPrice: existing?.outputPrice ?? 0,
         cacheReadPrice: existing?.cacheReadPrice ?? 0, modelRatio: existing?.modelRatio ?? 1,
         enabled: true, priced: existing?.priced ?? false, channels: existing?.channels ?? [],
@@ -49,7 +50,7 @@ export const usableModels = (
 
   return catalog.filter((model) => {
     const exposed = model.channels.some(
-      (channel) => channel.id === account.channelId,
+    (channel) => (account.channelIds ?? [account.channelId]).includes(channel.id),
     );
     if (!exposed) {
       return false;
