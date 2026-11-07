@@ -159,19 +159,41 @@ pub fn provided_key(headers: &axum::http::HeaderMap) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
-/// 会话线索：不同客户端习惯不同，三个常见头都收（亲和键的第一级来源）。
+/// 会话线索：按优先级读取非空头；空值不能遮住后面的有效会话标识。
 pub fn header_session(headers: &axum::http::HeaderMap) -> Option<String> {
-    ["x-conversation-id", "session-id", "x-session-id"]
+    ["x-conversation-id", "conversation-id", "session-id", "x-session-id"]
         .iter()
-        .find_map(|name| headers.get(*name))
-        .and_then(|value| value.to_str().ok())
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
+        .find_map(|name| {
+            headers
+                .get(*name)
+                .and_then(|value| value.to_str().ok())
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+        })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn empty_session_header_does_not_hide_another_valid_header() {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert("x-conversation-id", "   ".parse().unwrap());
+        headers.insert("x-session-id", " session-1 ".parse().unwrap());
+        assert_eq!(header_session(&headers).as_deref(), Some("session-1"));
+        headers.insert("conversation-id", "conversation-2".parse().unwrap());
+        assert_eq!(header_session(&headers).as_deref(), Some("conversation-2"));
+    }
+
+    #[test]
+    fn non_text_session_header_does_not_hide_another_valid_header() {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert("x-conversation-id", axum::http::HeaderValue::from_bytes(&[255]).unwrap());
+        headers.insert("session-id", "session-1".parse().unwrap());
+        assert_eq!(header_session(&headers).as_deref(), Some("session-1"));
+    }
 
     #[test]
     fn empty_allowlists_mean_unrestricted() {

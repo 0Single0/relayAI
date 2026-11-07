@@ -323,3 +323,15 @@ API Key:  sk-...（管理台创建的那串）
 | OpenAI Responses（Codex） | `POST /v1/responses` |
 
 模型清单：`GET /v1/models`（**按 Key 白名单过滤**）。
+
+### 会话亲和
+
+三个入口共用账号级亲和，按「API Key + 模型 + 会话标识」隔离，默认 30 分钟未命中后过期，命中自动续期，重启恢复未过期绑定。
+
+- 优先读取 `X-Conversation-ID` / `Conversation-ID` / `Session-ID` / `X-Session-ID` 请求头。
+- 其次读取请求体或 `metadata` 内的 `conversation_id` / `session_id` / `prompt_cache_key`；兼容 `metadata.user_id` 和 `user` 兜底。空白字段会跳过。
+- 未提供会话标识时，从首条用户消息（包含图片）派生稳定键。后续追加消息、修改 system 或工具列表不换会话键；同一派生键同时用于 WorkBuddy 的上游会话 ID。旧版内容指纹绑定可在命中后迁移到稳定键。
+- 默认 `prefer`：原号可用就直接复用。临时网络错误、5xx 或并发溢出允许本次请求使用备用号，但保留原绑定；网络/5xx 熔断期间暂时绕过原号，恢复可用后回到原号。凭据失效、限流、额度耗尽、账号限制或渠道拦截等明确不可用情况允许迁移。
+- 调度日志用 `via_affinity` 表示本次是否直接复用绑定账号，`affinity_reason` 区分 `hit`（命中）、`miss`（未命中）、`transient_error` / `transient_breaker`（临时绕行）、`account_failure`（故障解绑）等原因；`bound=true` 只表示保存了绑定，不代表本次命中。
+
+客户端应为每段独立对话提供唯一且稳定的会话标识；`user` / `metadata.user_id` 只有包含会话身份时才适合作为会话键。仅靠内容无法区分开场完全相同的不同对话，也无法在历史被裁剪或摘要完全替换后可靠识别原会话。显式会话标识不会因内容相同而复用其他会话的绑定。账号复用不保证上游一定命中 prompt cache。

@@ -8,8 +8,10 @@ use serde_json::Value;
 
 use crate::gateway::errors::GatewayError;
 use crate::gateway::protocol::cir::{
-    Block, CanonicalRequest, Message, Reasoning, RequestMetadata, Role, ToolCall, ToolSpec,
+    Block, CanonicalRequest, Message, Reasoning, Role, ToolCall, ToolSpec,
 };
+
+use super::metadata::decode_metadata;
 
 /// 服务端工具：上游没有对应实现，明确告诉模型"别调"。
 const SERVER_TOOLS: [&str; 4] = ["web_search", "web_fetch", "computer", "bash"];
@@ -55,15 +57,7 @@ pub fn decode_messages(body: &Value) -> Result<CanonicalRequest, GatewayError> {
         max_tokens: object.get("max_tokens").and_then(Value::as_u64),
         stream: object.get("stream").and_then(Value::as_bool).unwrap_or(false),
         reasoning: decode_thinking(object.get("thinking")),
-        metadata: RequestMetadata {
-            user_id: object
-                .get("metadata")
-                .and_then(|metadata| metadata.get("user_id"))
-                .and_then(Value::as_str)
-                .map(str::to_string),
-            session_id: None,
-            header_session: None,
-        },
+        metadata: decode_metadata(object),
         raw: body.clone(),
     })
 }

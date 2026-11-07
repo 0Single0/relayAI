@@ -8,8 +8,10 @@ use serde_json::Value;
 
 use crate::gateway::errors::GatewayError;
 use crate::gateway::protocol::cir::{
-    Block, CanonicalRequest, Message, Reasoning, RequestMetadata, Role, ToolCall, ToolSpec,
+    Block, CanonicalRequest, Message, Reasoning, Role, ToolCall, ToolSpec,
 };
+
+use super::metadata::decode_metadata;
 
 pub fn decode_response(body: &Value) -> Result<CanonicalRequest, GatewayError> {
     let object = body
@@ -62,14 +64,7 @@ pub fn decode_response(body: &Value) -> Result<CanonicalRequest, GatewayError> {
         max_tokens: object.get("max_output_tokens").and_then(Value::as_u64),
         stream: object.get("stream").and_then(Value::as_bool).unwrap_or(false),
         reasoning: decode_reasoning(object),
-        metadata: RequestMetadata {
-            user_id: object
-                .get("user")
-                .and_then(Value::as_str)
-                .map(str::to_string),
-            session_id: None,
-            header_session: None,
-        },
+        metadata: decode_metadata(object),
         raw: body.clone(),
     })
 }

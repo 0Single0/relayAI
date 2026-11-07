@@ -98,8 +98,9 @@ impl RequestMetadata {
         ]
         .into_iter()
         .flatten()
+        .map(|key| key.trim())
         .find(|key| !key.is_empty())
-        .cloned()
+        .map(str::to_string)
     }
 }
 

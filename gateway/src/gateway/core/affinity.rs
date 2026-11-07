@@ -2,7 +2,7 @@
 //!
 //! 这是调度里与"负载均衡"正面冲突的那一半，所以规则写得很明确：
 //! 绑定粒度是**账号级**（缓存大概率按账号隔离）；客户端没给会话锚点时用
-//! 内容前缀的链式哈希兜底（前缀没变就还能粘住）；失效是阶梯式的
+//! 首条用户消息派生稳定会话键；链式内容指纹只用于恢复旧版绑定。失效是阶梯式的
 //! （原账号 → 同渠道换号 → 跨渠道），每往下一级缓存必丢一次。
 
 use std::{
@@ -15,7 +15,11 @@ use std::{
 
 use sha2::{Digest, Sha256};
 
-use crate::gateway::{config::AffinityConfig, protocol::cir::CanonicalRequest, timeutil::now_ms};
+use crate::gateway::{
+    config::AffinityConfig,
+    protocol::cir::{CanonicalRequest, Role},
+    timeutil::now_ms,
+};
 
 /// 内容指纹保留多少个断点位置（与 Anthropic/Bedrock "回看约 20 个 content block" 同构）。
 const LOOKBACK_POSITIONS: usize = 20;
@@ -122,9 +126,8 @@ impl AffinityStore {
         self.max_entries.load(Ordering::Relaxed)
     }
 
-    /// 候选键：显式会话锚点优先，其次是从最新前缀往回回溯的内容指纹。
-    ///
-    /// 顺序即优先级：lookup 会依次尝试，命中第一个可用的绑定。
+    /// 显式会话只查自己的绑定，不能因内容相同而串到另一个会话。
+    /// 无显式标识时先查稳定开场键，再尝试旧版内容指纹以平滑恢复已有绑定。
     pub fn candidate_keys(
         scope: &str,
         public_model: &str,
@@ -132,12 +135,42 @@ impl AffinityStore {
     ) -> Vec<String> {
         let mut keys = Vec::new();
         if let Some(session) = request.metadata.session_key() {
+            return vec![format!("s:{scope}:{public_model}:{session}")];
+        }
+        if let Some(session) = Self::fallback_session_key(scope, public_model, request) {
             keys.push(format!("s:{scope}:{public_model}:{session}"));
         }
         let mut content = content_keys(scope, public_model, request);
         content.reverse(); // 最新（最长）的前缀优先
         keys.extend(content);
         keys
+    }
+
+    /// 会话身份不等于缓存前缀。忽略可变 system/tools，保留首条 user 的全部文本和图片。
+    /// 相同开场无法区分为独立会话；历史裁剪掉开场时，必须由客户端提供显式 session。
+    pub fn fallback_session_key(
+        scope: &str,
+        public_model: &str,
+        request: &CanonicalRequest,
+    ) -> Option<String> {
+        let opening = request
+            .messages
+            .iter()
+            .find(|message| message.role == Role::User)?;
+        if opening.content.is_empty() {
+            return None;
+        }
+        let bytes = serde_json::to_vec(&(scope, public_model, &opening.content)).ok()?;
+        Some(format!("pfx-v1-{}", hex(&Sha256::digest(bytes))))
+    }
+
+    /// 给适配器同一份稳定身份；不修改原始请求体，也不把滚动指纹当作上游会话 ID。
+    pub fn resolve_request(scope: &str, request: &CanonicalRequest) -> CanonicalRequest {
+        let mut resolved = request.clone();
+        if resolved.metadata.session_key().is_none() {
+            resolved.metadata.session_id = Self::fallback_session_key(scope, &request.model, request);
+        }
+        resolved
     }
 
     pub fn lookup(&self, keys: &[String], now: u64) -> Option<(String, Binding)> {
@@ -321,6 +354,10 @@ fn hex(bytes: &[u8]) -> String {
     text.truncate(24);
     text
 }
+
+#[cfg(test)]
+#[path = "affinity/regression_tests.rs"]
+mod regression_tests;
 
 #[cfg(test)]
 mod tests {

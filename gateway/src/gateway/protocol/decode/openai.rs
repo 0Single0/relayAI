@@ -8,8 +8,10 @@ use serde_json::Value;
 
 use crate::gateway::errors::GatewayError;
 use crate::gateway::protocol::cir::{
-    Block, CanonicalRequest, Message, Reasoning, RequestMetadata, Role, ToolCall, ToolSpec,
+    Block, CanonicalRequest, Message, Reasoning, Role, ToolCall, ToolSpec,
 };
+
+use super::metadata::decode_metadata;
 
 pub fn decode_chat(body: &Value) -> Result<CanonicalRequest, GatewayError> {
     let object = body
@@ -245,26 +247,6 @@ fn decode_reasoning(object: &serde_json::Map<String, Value>) -> Option<Reasoning
         return None;
     }
     Some(Reasoning { enabled, effort })
-}
-
-fn decode_metadata(object: &serde_json::Map<String, Value>) -> RequestMetadata {
-    let nested = object.get("metadata").and_then(Value::as_object);
-    RequestMetadata {
-        user_id: nested
-            .and_then(|map| map.get("user_id"))
-            .and_then(Value::as_str)
-            .map(str::to_string),
-        session_id: ["conversation_id", "session_id", "prompt_cache_key"]
-            .iter()
-            .find_map(|key| object.get(*key).and_then(Value::as_str))
-            .or_else(|| {
-                nested
-                    .and_then(|map| map.get("session_id"))
-                    .and_then(Value::as_str)
-            })
-            .map(str::to_string),
-        header_session: None,
-    }
 }
 
 #[cfg(test)]
