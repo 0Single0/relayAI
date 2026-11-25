@@ -27,9 +27,9 @@ export type ChannelPayload = {
   channelRatio: number;
   concurrencyLimit: number | null;
   rateLimitQps: number | null;
-  /** 对外暴露的模型白名单；空数组 = 清空限制。 */
+  /** 对外模型发布规则（精确名称 / * 通配符）；空数组 = 清空限制。 */
   modelAllow?: string[];
-  /** 探活模型（卡片上显示的那个）；空串 = 恢复"自动挑"。 */
+  /** 旧版单值探活模型；空串 = 清空。 */
   probeModel?: string;
   /**
    * 定时探活**真正读取**的模型列表。

@@ -17,9 +17,9 @@ import (
 
 // ProbeTarget 是一个待探的目标：某分组的某个模型，用某个账号跑。
 type ProbeTarget struct {
-	ChannelID string
+	ChannelID  string
 	AccountUID string
-	// Model 是**上游模型名**（网关按它记限流）。
+	// Model 是提交给网关的对外模型名，由网关应用账号映射。
 	Model string
 	// OutboundModel 是对外名，仅用于展示。
 	OutboundModel string
@@ -33,10 +33,10 @@ type ProbeTarget struct {
 //     「探活模型」）与 `probe_models`（多选）的并集；两个都为空 = 这个分组不探 ——
 //     绝不擅自扩大范围。探活消耗真实额度，"没说要探"和"探全部"必须严格区分，
 //     否则一次同步进来的几十个模型会在后台悄悄烧钱。
-//  3. 每个模型挑**一个**账号去探 —— 探活回答的是"这个模型通不通"，
-//     号级别的可用性由网关的冷却状态反映，不必重复确认。
+//  3. 返回初选账号；执行前由网关矩阵确认发布状态与具体账号能力，
+//     每个模型只探一个真实支持它的账号。
 func (s *Store) ProbeTargets(ctx context.Context) ([]ProbeTarget, error) {
-		/*
+	/*
 		一次查询取全：分组 → 账号 → 模型。
 
 		用 SQL 聚合而不是在 Go 里循环查，是因为"每个分组挑一个号"
@@ -48,10 +48,11 @@ func (s *Store) ProbeTargets(ctx context.Context) ([]ProbeTarget, error) {
 
 	const query = `
 		WITH enabled_accounts AS (
-		    SELECT channel_id, uid, platform,
-		           COALESCE(model_allow, ARRAY[]::text[]) AS model_allow
-		    FROM accounts
-		    WHERE enabled
+		    SELECT ag.group_id AS channel_id, a.uid, a.platform,
+		           COALESCE(a.model_allow, ARRAY[]::text[]) AS model_allow
+		    FROM accounts a
+		    JOIN account_groups ag ON ag.account_id = a.id
+		    WHERE a.enabled AND ag.enabled
 		),
 		/*
 			只探**显式声明**的模型。

@@ -421,8 +421,8 @@ func (c *Client) RefreshCredential(ctx context.Context, channelID, uid string) (
 
 // AccountProbe 是账号探活结果。
 type AccountProbe struct {
-	OK        bool   `json:"ok"`
-	LatencyMs int64  `json:"latencyMs"`
+	OK        bool  `json:"ok"`
+	LatencyMs int64 `json:"latencyMs"`
 	// PingLatencyMs 是对上游 origin 的一次 HEAD 往返；测不到时为 null。
 	//
 	// 与 LatencyMs 的差别是**问题不同**：那个是"模型多久开始回话"（含排队、推理），
@@ -585,13 +585,14 @@ type CatalogModel struct {
 	MaxOutput        *int64              `json:"maxOutput"`
 	Capabilities     CatalogCapabilities `json:"capabilities"`
 	Channels         []struct {
-		ChannelID     string `json:"channelId"`
-		UpstreamModel string `json:"upstreamModel"`
-		Priority      int    `json:"priority"`
-		Weight        int    `json:"weight"`
-		Enabled       bool   `json:"enabled"`
-		Free          bool   `json:"free"`
-		Source        string `json:"source"`
+		ChannelID     string   `json:"channelId"`
+		AccountUIDs   []string `json:"accountUids"`
+		UpstreamModel string   `json:"upstreamModel"`
+		Priority      int      `json:"priority"`
+		Weight        int      `json:"weight"`
+		Enabled       bool     `json:"enabled"`
+		Free          bool     `json:"free"`
+		Source        string   `json:"source"`
 	} `json:"channels"`
 }
 
@@ -608,6 +609,11 @@ func (c *Client) GetCatalog(ctx context.Context) ([]CatalogModel, error) {
 		return nil, err
 	}
 	return out.Models, nil
+}
+
+// RefreshCatalog rebuilds the account-derived catalog without a generation call.
+func (c *Client) RefreshCatalog(ctx context.Context) error {
+	return c.post(ctx, "/internal/matrix/refresh", nil, nil)
 }
 
 // PriceEntry 是一条模型价格（元 / 百万 token）。

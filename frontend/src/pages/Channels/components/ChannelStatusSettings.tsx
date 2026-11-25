@@ -1,6 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
 import { Activity } from "lucide-react";
-import { listCatalogModels, type CatalogModel } from "@/api/catalog";
+import { listChannelModels } from "@/api/channels";
+import { MyBox } from "@/components/common/MyBox";
+import { ErrorState } from "@/components/common/ErrorState";
+import { getRequestErrorMessage } from "@/utils/request";
+import { matchesModelRule } from "../modelRules";
 import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/utils";
 
@@ -26,18 +30,22 @@ export type StatusSettingsValue = {
 
 export const ChannelStatusSettings = ({
   channelId,
+  modelRules = [],
   value,
   disabled,
   onChange,
 }: {
   /** 分组 id；新建流程里为空，此时还没拉过模型目录。 */
   channelId: string;
+  modelRules?: string[];
   value: StatusSettingsValue;
   disabled?: boolean;
   onChange: (next: StatusSettingsValue) => void;
 }) => {
-  const [models, setModels] = useState<CatalogModel[]>([]);
+  const [models, setModels] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState("");
+  const [reload, setReload] = useState(0);
 
   useEffect(() => {
     if (!channelId) {
@@ -46,13 +54,14 @@ export const ChannelStatusSettings = ({
     }
     let active = true;
     setLoading(true);
-    // 拉目录失败只让列表退化，不阻断表单：展示开关本身仍然能改。
-    void listCatalogModels()
+    setModels([]);
+    setLoadError("");
+    void listChannelModels(channelId)
       .then((response) => {
-        if (active) setModels(response.data?.models ?? []);
+        if (active) setModels((response.data ?? []).map((model) => model.id));
       })
-      .catch(() => {
-        if (active) setModels([]);
+      .catch((error) => {
+        if (active) setLoadError(getRequestErrorMessage(error));
       })
       .finally(() => {
         if (active) setLoading(false);
@@ -60,7 +69,7 @@ export const ChannelStatusSettings = ({
     return () => {
       active = false;
     };
-  }, [channelId]);
+  }, [channelId, reload]);
 
   /**
    * 只列**这个分组真的提供**的模型。
@@ -70,15 +79,10 @@ export const ChannelStatusSettings = ({
    */
   const options = useMemo(
     () =>
-      models
-        .filter(
-          (model) =>
-            model.enabled !== false &&
-            model.channels.some((item) => item.id === channelId && item.exposed),
-        )
-        .map((model) => model.name)
+      [...new Set(models)]
+        .filter((name) => modelRules.length === 0 || modelRules.some((rule) => matchesModelRule(rule, name)))
         .sort((left, right) => left.localeCompare(right, "zh-CN")),
-    [channelId, models],
+    [models, modelRules],
   );
 
   const toggleModel = (name: string, checked: boolean) => {
@@ -119,13 +123,13 @@ export const ChannelStatusSettings = ({
 
       <div className="flex flex-col gap-1.5 border-t pt-2.5">
         <span className="text-xs font-medium">探活模型</span>
+        <MyBox isLoading={loading} text="正在读取该分组的模型目录…" className="min-h-8">
         {!channelId ? (
           <p className="text-[11px] leading-4 text-muted-foreground">
-            分组保存后，这里会列出它对外提供的模型。探活会真实消耗上游额度，
-            所以**没选就完全不探**。
+            保存分组并添加账号后，可从已发布模型中选择。
           </p>
-        ) : loading ? (
-          <p className="text-[11px] text-muted-foreground">正在读取该分组的模型目录…</p>
+        ) : loadError ? (
+          <ErrorState message={loadError} onRetry={() => setReload((previous) => previous + 1)} />
         ) : options.length === 0 ? (
           <p className="text-[11px] leading-4 text-muted-foreground">
             这个分组还没有对外提供的模型，暂时无法设置探活模型。
@@ -140,7 +144,7 @@ export const ChannelStatusSettings = ({
                   <label
                     key={name}
                     className={cn(
-                      "inline-flex cursor-pointer items-center gap-1.5 rounded-md border px-2 py-1 font-mono text-[11px] transition-colors",
+                      "inline-flex max-w-full cursor-pointer items-center gap-1.5 rounded-md border px-2 py-1 font-mono text-[11px] transition-colors",
                       checked
                         ? "border-primary/40 bg-primary/10 text-foreground"
                         : "bg-card text-muted-foreground hover:border-border-strong",
@@ -153,13 +157,14 @@ export const ChannelStatusSettings = ({
                       disabled={disabled}
                       onChange={(event) => toggleModel(name, event.target.checked)}
                     />
-                    {name}
+                    <span className="min-w-0 break-all">{name}</span>
                   </label>
                 );
               })}
             </div>
           </>
         )}
+        </MyBox>
       </div>
     </div>
   );

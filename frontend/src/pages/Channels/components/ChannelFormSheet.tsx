@@ -267,7 +267,7 @@ export const ChannelFormSheet = ({
             />
           </Field>
 
-          <Field label="模型厂商" error={errors.modelProvider} hint="分组只发布已标注为该厂商的模型。">
+          <Field label="模型厂商" error={errors.modelProvider} hint="新建时预填厂商发布规则，可在「对外模型」中调整；实际支持范围由账号目录决定。">
             <Select value={form.modelProvider || undefined} onValueChange={(next) => update("modelProvider", next)}>
               <SelectTrigger aria-label="模型厂商" aria-invalid={Boolean(errors.modelProvider)}><SelectValue placeholder="选择模型厂商" /></SelectTrigger>
               <SelectContent>
@@ -356,6 +356,7 @@ export const ChannelFormSheet = ({
           // 新建时还不存在这个分组，也就没有"它对外提供的模型"。
           // 传空串让这块只显示说明，不去拉一份必然为空的目录。
           channelId={isEdit ? channel.id : ""}
+          modelRules={channel?.modelAllow}
           value={form.status}
           disabled={pending}
           onChange={(next) => update("status", next)}

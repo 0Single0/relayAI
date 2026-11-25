@@ -198,6 +198,9 @@ type SyncResult struct {
 // 网关返回空清单时**跳过清理**：那通常意味着网关刚重启、矩阵还没建好，
 // 此时清空整张表会让用户以为模型全没了。
 func SyncCatalog(ctx context.Context, svcCtx *svc.ServiceContext) (*SyncResult, error) {
+	if err := svcCtx.Gateway.RefreshCatalog(ctx); err != nil {
+		return nil, err
+	}
 	models, err := svcCtx.Gateway.GetCatalog(ctx)
 	if err != nil {
 		return nil, err

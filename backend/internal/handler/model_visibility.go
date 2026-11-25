@@ -1,13 +1,16 @@
 package handler
 
-import "relayai/backend/internal/store"
+import (
+	"relayai/backend/internal/modelpolicy"
+	"relayai/backend/internal/store"
+)
 
 // channelModelAllowed 判断某个分组是否**对外提供**某个模型。
 //
 // 三种情况：
 //   - 分组停用 → 不提供（停用的分组不该出现在任何清单里）；
 //   - `model_allow` 为空 → **不限制**，分组名下账号能跑的模型全部对外；
-//   - `model_allow` 有值 → 只提供列表里的。
+//   - `model_allow` 有值 → 只提供匹配精确名称或 * 规则的模型。
 //
 // 注意"空 = 不限制"而不是"空 = 一个都不给"：后者会让新建分组默认不可用，
 // 而且界面上很难看出是"没配"还是"配成空"。
@@ -15,15 +18,7 @@ func channelModelAllowed(channel store.Channel, model string) bool {
 	if !channel.Enabled {
 		return false
 	}
-	if len(channel.ModelAllow) == 0 {
-		return true
-	}
-	for _, allowed := range channel.ModelAllow {
-		if allowed == model {
-			return true
-		}
-	}
-	return false
+	return modelpolicy.Allows(channel.ModelAllow, model)
 }
 
 // ModelRouteSource 是「模型 → 分组」的**事实来源**：哪些分组真的有这个模型的路由。
@@ -49,8 +44,8 @@ type VisibleModel struct {
 // visibleModels 计算**对外可见**的模型清单。
 //
 // 一个模型对外可见，当且仅当存在一个分组同时满足：
-//   1. 该分组**真的有**这个模型的路由（`routes` 里查得到）；
-//   2. 该分组的外白名单放行它（`channelModelAllowed`）。
+//  1. 该分组**真的有**这个模型的路由（`routes` 里查得到）；
+//  2. 该分组的外白名单放行它（`channelModelAllowed`）。
 //
 // 第 1 条是关键：少了它，任何"没配白名单"的分组都会放行全部模型，
 // 限制别的分组就等于没限制 —— 这正是"把 WorkBuddy 限制成只用 ds/glm

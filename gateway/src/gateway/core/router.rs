@@ -53,13 +53,14 @@ pub fn candidates(
             continue;
         }
         for account in accounts {
-            if !account.enabled {
+            if !account.enabled || !account.membership_enabled
+                || !matrix.account_supports(&route.channel_id, &route.public_model, &account.key.uid) {
                 continue;
             }
             // 账号级白名单：这个号不服务该模型就直接跳过（不是"请求有问题"，
             // 所以不进 rejected_requirements —— 那是给 400 用的）。
             if !account.model_allow.is_empty()
-                && !account.model_allow.iter().any(|name| name == public_model)
+                && !account.model_allow.iter().any(|name| name == &route.public_model)
             {
                 continue;
             }
@@ -67,7 +68,7 @@ pub fn candidates(
             let mut route = route.clone();
             route.priority = account.priority;
             route.weight = account.weight;
-            if let Some(upstream) = account.model_rename.get(public_model) {
+            if let Some(upstream) = account.model_rename.get(&route.public_model) {
                 route.upstream_model = upstream.clone();
             }
             set.usable.push(Candidate {
@@ -456,6 +457,27 @@ mod tests {
             blocked.rejected_requirements.is_empty(),
             "白名单过滤是账号侧限制，不该报成请求问题（否则会误报 400）"
         );
+    }
+
+    #[test]
+    fn mixed_accounts_use_own_catalog_and_canonical_alias() {
+        let mut matrix = Matrix::build(&[ChannelCatalog {
+            channel_id: "ds".into(), priority: 100, weight: 1, live: true,
+            models: vec![crate::gateway::channels::UpstreamModel { id: "deepseek-v5".into(), ..Default::default() }],
+        }], &[("client-alias".into(), "deepseek-v5".into())].into_iter().collect(), &[]);
+        matrix.restrict_accounts([(("ds".into(), "deepseek-v5".into()),
+            ["supports-ds".into(), "disabled-membership".into()].into_iter().collect())].into_iter().collect());
+        let mut supported = PoolAccount::new("ds", "supports-ds");
+        supported.model_allow = vec!["deepseek-v5".into()];
+        supported.model_rename.insert("deepseek-v5".into(), "upstream-new-id".into());
+        let unsupported = PoolAccount::new("ds", "supports-qwen-only");
+        let mut disabled = PoolAccount::new("ds", "disabled-membership");
+        disabled.membership_enabled = false;
+        let pool = AccountPool::new(vec![Arc::new(supported), Arc::new(unsupported), Arc::new(disabled)], CooldownConfig::default());
+        let got = candidates(&matrix, &Requirements::default(), &pool, "client-alias");
+        assert_eq!(got.usable.len(), 1);
+        assert_eq!(got.usable[0].account.key.uid, "supports-ds");
+        assert_eq!(got.usable[0].route.upstream_model, "upstream-new-id");
     }
 
     /// 空白名单 = 不限制：该渠道的所有模型都能用。

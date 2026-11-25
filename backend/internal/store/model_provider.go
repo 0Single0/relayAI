@@ -2,7 +2,6 @@ package store
 
 import (
 	"context"
-	"fmt"
 	"regexp"
 	"strings"
 
@@ -51,18 +50,6 @@ func builtinModelProvider(name string) string {
 	return ""
 }
 
-func (s *Store) ModelProviderIndex(ctx context.Context) (map[string]string, error) {
-	var rows []models.Models
-	if err := s.db.WithContext(ctx).Select("canonical_name", "model_provider").Find(&rows).Error; err != nil {
-		return nil, err
-	}
-	index := make(map[string]string, len(rows))
-	for _, row := range rows {
-		index[row.CanonicalName] = row.ModelProvider
-	}
-	return index, nil
-}
-
 func (s *Store) ApplyBuiltinModelProviders(ctx context.Context) error {
 	var names []string
 	if err := s.db.WithContext(ctx).Model(&models.Models{}).Where("model_provider = ''").Pluck("canonical_name", &names).Error; err != nil {
@@ -73,26 +60,6 @@ func (s *Store) ApplyBuiltinModelProviders(ctx context.Context) error {
 			if err := s.db.WithContext(ctx).Model(&models.Models{}).Where("canonical_name = ? AND model_provider = ''", name).Update("model_provider", provider).Error; err != nil {
 				return err
 			}
-		}
-	}
-	return nil
-}
-
-func (s *Store) validateGroupModels(ctx context.Context, provider string, names []string) error {
-	if provider == "" {
-		return nil
-	} // Migrated groups retain their publication policy.
-	index, err := s.ModelProviderIndex(ctx)
-	if err != nil {
-		return err
-	}
-	for _, name := range names {
-		modelProvider := index[name]
-		if modelProvider == "" {
-			modelProvider = builtinModelProvider(name)
-		}
-		if modelProvider != provider {
-			return fmt.Errorf("%w：模型 %s 不属于厂商 %s，请先在模型配置中确认厂商", ErrInvalidInput, name, provider)
 		}
 	}
 	return nil

@@ -68,14 +68,14 @@ type ProbeItem struct {
 // ProbeSweepResult 是一轮探活的统计。
 type ProbeSweepResult struct {
 	// Total 是本轮探测的 (分组 × 模型) 条数。
-	Total int `json:"total"`
-	OK    int `json:"ok"`
+	Total  int `json:"total"`
+	OK     int `json:"ok"`
 	Failed int `json:"failed"`
 	// Limited 是因上游限流而失败的条数 —— 与"真故障"分开报。
 	//
 	// 限流不是故障：号还能用，只是那个模型在等。混进 Failed 会让人
 	// 以为分组坏了。
-	Limited int `json:"limited"`
+	Limited int         `json:"limited"`
 	Items   []ProbeItem `json:"items"`
 }
 
@@ -147,6 +147,13 @@ func RunProbeOnce(
 	targets, err := svcCtx.Store.ProbeTargets(ctx)
 	if err != nil {
 		return nil, err
+	}
+	if len(targets) > 0 {
+		catalog, err := svcCtx.Gateway.GetCatalog(ctx)
+		if err != nil {
+			return nil, err
+		}
+		targets = resolveProbeTargets(targets, catalog)
 	}
 
 	result := &ProbeSweepResult{Items: make([]ProbeItem, 0, len(targets))}

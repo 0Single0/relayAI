@@ -216,13 +216,6 @@ impl Storage {
             .collect())
     }
 
-    pub async fn model_providers(&self) -> Result<std::collections::HashMap<String, String>, GatewayError> {
-        let rows = sqlx::query_as::<_, (String, String)>(
-            "SELECT canonical_name, model_provider FROM models WHERE model_provider <> ''",
-        ).fetch_all(&self.pool).await.map_err(db_error)?;
-        Ok(rows.into_iter().collect())
-    }
-
     /// 查一个渠道的 adapter（平台名）。
     ///
     /// 只给"空分组查适配器"这一条兜底路径用：

@@ -8,6 +8,7 @@ import (
 
 	"relayai/backend/internal/gateway"
 	"relayai/backend/internal/httpx"
+	"relayai/backend/internal/modelpolicy"
 	"relayai/backend/internal/store"
 	"relayai/backend/internal/svc"
 )
@@ -43,8 +44,8 @@ func registerChannels(mux *http.ServeMux, ctx *svc.ServiceContext) {
 			httpx.Fail(w, http.StatusBadRequest, "分组 id、名称与模型厂商都不能为空")
 			return
 		}
-		if len(input.ModelAllow) > 0 {
-			httpx.Fail(w, http.StatusBadRequest, "请先为分组添加账号，再配置对外模型")
+		if err := modelpolicy.Validate(input.ModelAllow); err != nil {
+			httpx.Fail(w, http.StatusBadRequest, err.Error())
 			return
 		}
 		// 探活模型必须是这个分组**真实提供**的模型 —— 新建时还没有账号，
@@ -73,23 +74,9 @@ func registerChannels(mux *http.ServeMux, ctx *svc.ServiceContext) {
 			httpx.Fail(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		if len(input.ModelAllow) > 0 {
-			models, err := ctx.Gateway.GetChannelModels(r.Context(), r.PathValue("id"))
-			if err != nil {
-				httpx.FailError(w, r, err)
-				return
-			}
-			supported := map[string]bool{}
-			for _, model := range models {
-				supported[model.ID] = true
-			}
-			input.ModelAllow = cleanModelIDs(input.ModelAllow)
-			for _, model := range input.ModelAllow {
-				if !supported[model] {
-					httpx.Fail(w, http.StatusBadRequest, "对外模型必须由本分组的已启用账号支持："+model)
-					return
-				}
-			}
+		if err := modelpolicy.Validate(input.ModelAllow); err != nil {
+			httpx.Fail(w, http.StatusBadRequest, err.Error())
+			return
 		}
 		/*
 		  探活模型同样要校验：只能选这个分组真的对外提供的模型。
@@ -99,6 +86,15 @@ func registerChannels(mux *http.ServeMux, ctx *svc.ServiceContext) {
 		  却会和真故障混在同一张卡片上，让人去查根本没问题的账号。
 		*/
 		if input.ProbeModels != nil && len(*input.ProbeModels) > 0 {
+			group, err := ctx.Store.GetChannel(r.Context(), r.PathValue("id"))
+			if err != nil {
+				httpx.FailError(w, r, err)
+				return
+			}
+			rules := group.ModelAllow
+			if input.ModelAllow != nil {
+				rules = input.ModelAllow
+			}
 			models, err := ctx.Gateway.GetChannelModels(r.Context(), r.PathValue("id"))
 			if err != nil {
 				httpx.FailError(w, r, err)
@@ -112,7 +108,7 @@ func registerChannels(mux *http.ServeMux, ctx *svc.ServiceContext) {
 				if name == "" {
 					continue
 				}
-				if !supported[name] {
+				if !supported[name] || !modelpolicy.Allows(rules, name) {
 					httpx.Fail(w, http.StatusBadRequest, "探活模型必须由本分组提供："+name)
 					return
 				}

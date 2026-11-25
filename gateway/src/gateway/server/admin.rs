@@ -310,6 +310,7 @@ async fn catalog(State(state): State<SharedGateway>) -> Response {
             .map(|route| {
                 json!({
                     "channelId": route.channel_id,
+                    "accountUids": matrix.supporting_accounts(&route.channel_id, &route.public_model),
                     "upstreamModel": route.upstream_model,
                     "priority": route.priority,
                     "weight": route.weight,
@@ -394,7 +395,7 @@ async fn channel_models(
     Path(id): Path<String>,
 ) -> Response {
     let mut models = Vec::new();
-    for account in state.pool.by_channel(&id).iter().filter(|account| account.enabled) {
+    for account in state.pool.by_channel(&id).iter().filter(|account| account.enabled && account.membership_enabled) {
         match state.models_for_account(account).await {
             Ok(entries) => {
                 for model in entries {

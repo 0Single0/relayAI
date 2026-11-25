@@ -420,14 +420,11 @@ impl GatewayState {
         let Some(adapter) = self.channel(&account.platform) else {
             return Ok(Vec::new());
         };
-        let mut models = adapter
+        let models = adapter
             .list_models(&self.client, &account.snapshot())
             .await?
             .unwrap_or_default();
-        models.retain(|model| {
-            account.model_allow.is_empty() || account.model_allow.contains(&model.id)
-        });
-        Ok(models)
+        Ok(project_account_models(account, models))
     }
 
     /// 取当前矩阵；过期或不存在时按需重建（TTL + 双检锁）。
@@ -452,19 +449,18 @@ impl GatewayState {
         let config = self.config();
         let mut catalogs = Vec::new();
         let mut overrides = Vec::new();
-        let model_providers = self.storage.model_providers().await.unwrap_or_default();
+        let mut account_models = HashMap::new();
         let groups = self.storage.list_channels().await.unwrap_or_default();
         for channel in groups.iter().filter(|channel| channel.enabled) {
             // Aggregate real assigned accounts, including each custom account's own catalog.
             let mut models = Vec::new();
             let accounts = self.pool.by_channel(&channel.id);
-            for account in accounts.iter().filter(|account| account.enabled) {
+            for account in accounts.iter().filter(|account| account.enabled && account.membership_enabled) {
                 if let Ok(entries) = self.models_for_account(account).await {
-                    for model in entries.into_iter().filter(|model| {
-                        channel.model_provider.is_empty()
-                            || model_providers.get(&model.id).is_some_and(|provider| provider == &channel.model_provider)
-                    }) {
-                        if !channel.model_allow.is_empty() && !channel.model_allow.contains(&model.id) {
+                    for model in entries {
+                        account_models.entry((channel.id.clone(), model.id.clone()))
+                            .or_insert_with(std::collections::HashSet::new).insert(account.key.uid.clone());
+                        if !crate::gateway::core::model_policy::allows(&channel.model_allow, &model.id) {
                             overrides.push(RouteOverride {
                                 model: model.id.clone(),
                                 channel_id: channel.id.clone(),
@@ -490,7 +486,9 @@ impl GatewayState {
             });
         }
 
-        let matrix = Arc::new(Matrix::build(&catalogs, &config.aliases, &overrides));
+        let mut matrix = Matrix::build(&catalogs, &config.aliases, &overrides);
+        matrix.restrict_accounts(account_models);
+        let matrix = Arc::new(matrix);
         if let Ok(mut slot) = self.matrix.write() {
             *slot = Some(Arc::clone(&matrix));
         }
@@ -804,6 +802,46 @@ fn urlencode(value: &str) -> String {
 /// 表现为"加载 0 个账号"而配置看起来完全正常 —— 这正是改这一行之前的实际故障。
 ///
 /// 平台未知（写错或适配器未实现）的账号跳过并记警告，不让整个网关起不来。
+// Project explicit account aliases from that account's own catalog. A group
+// pattern never synthesizes models, and one account cannot borrow another's
+// capabilities merely because both belong to the same group.
+fn project_account_models(account: &PoolAccount, mut models: Vec<channels::UpstreamModel>) -> Vec<channels::UpstreamModel> {
+    let mut aliases = Vec::new();
+    for (public, upstream) in &account.model_rename {
+        if models.iter().any(|model| &model.id == public) { continue; }
+        if let Some(source) = models.iter().find(|model| &model.id == upstream) {
+            let mut alias = source.clone();
+            alias.id = public.clone();
+            alias.user_declared = true;
+            aliases.push(alias);
+        }
+    }
+    models.extend(aliases);
+    models.retain(|model| account.model_allow.is_empty() || account.model_allow.contains(&model.id));
+    models
+}
+
+#[cfg(test)]
+mod account_catalog_tests {
+    use super::*;
+
+    #[test]
+    fn aliases_use_own_source_catalog_and_allowlist() {
+        let mut account = PoolAccount::new("ds", "multi-vendor-account");
+        account.model_rename.insert("deepseek-v5".into(), "upstream-new-id".into());
+        account.model_rename.insert("phantom".into(), "missing-target".into());
+        account.model_allow = vec!["deepseek-v5".into(), "qwen4".into(), "phantom".into()];
+        let models = project_account_models(&account, vec![
+            channels::UpstreamModel { id: "upstream-new-id".into(), ..Default::default() },
+            channels::UpstreamModel { id: "qwen4".into(), ..Default::default() },
+        ]);
+        assert_eq!(models.len(), 2);
+        assert!(models.iter().any(|model| model.id == "deepseek-v5"));
+        assert!(models.iter().any(|model| model.id == "qwen4"));
+        assert!(!models.iter().any(|model| model.id == "phantom"));
+    }
+}
+
 fn build_accounts(
     config: &Config,
     adapters: &HashMap<String, Arc<dyn ChannelAdapter>>,

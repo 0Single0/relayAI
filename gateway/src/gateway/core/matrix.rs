@@ -4,7 +4,7 @@
 //! 各渠道目录里有什么模型，矩阵里就有什么候选；渠道上新一次目录刷新即生效。
 //! 人工只做覆盖（别名、优先级、上限、临时禁用）。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::gateway::{
     channels::{ModelCapabilities, UpstreamModel},
@@ -142,6 +142,7 @@ pub struct Matrix {
     routes: HashMap<String, Vec<ModelRoute>>,
     aliases: HashMap<String, String>,
     built_at_ms: u64,
+    account_models: Option<HashMap<(String, String), HashSet<String>>>,
 }
 
 impl Matrix {
@@ -205,7 +206,26 @@ impl Matrix {
             routes,
             aliases: aliases.clone(),
             built_at_ms: crate::gateway::timeutil::now_ms(),
+            account_models: None,
         }
+    }
+
+    pub fn restrict_accounts(&mut self, models: HashMap<(String, String), HashSet<String>>) {
+        self.account_models = Some(models);
+    }
+
+    pub fn account_supports(&self, channel: &str, model: &str, uid: &str) -> bool {
+        self.account_models.as_ref().map_or(true, |models| {
+            models.get(&(channel.to_string(), model.to_string())).is_some_and(|uids| uids.contains(uid))
+        })
+    }
+
+    pub fn supporting_accounts(&self, channel: &str, model: &str) -> Vec<String> {
+        let mut uids: Vec<_> = self.account_models.as_ref()
+            .and_then(|models| models.get(&(channel.to_string(), model.to_string())))
+            .map(|uids| uids.iter().cloned().collect()).unwrap_or_default();
+        uids.sort();
+        uids
     }
 
     pub fn built_at_ms(&self) -> u64 {

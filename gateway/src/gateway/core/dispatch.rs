@@ -673,7 +673,8 @@ pub async fn probe_account(
         matrix
             .routes(model)
             .iter()
-            .any(|route| route.channel_id == account.key.channel_id)
+            .any(|route| route.channel_id == account.key.channel_id
+                && matrix.account_supports(&route.channel_id, &route.public_model, &account.key.uid))
     };
     let chosen = match model {
         Some(model) => model.to_string(),
@@ -735,12 +736,13 @@ pub async fn probe_account(
                 .ok_or_else(|| GatewayError::invalid_request("该渠道没有任何模型可用于测试"))?
         }
     };
-    let upstream_model = matrix
+    let canonical = matrix.canonical(&chosen);
+    let upstream_model = account.model_rename.get(&canonical).cloned().unwrap_or_else(|| matrix
         .routes(&chosen)
         .into_iter()
         .find(|route| route.channel_id == account.key.channel_id)
         .map(|route| route.upstream_model)
-        .unwrap_or_else(|| chosen.clone());
+        .unwrap_or_else(|| chosen.clone()));
 
     // 最小请求：一句 hi，非流式由本地折叠。
     let request = CanonicalRequest {

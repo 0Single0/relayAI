@@ -7,6 +7,7 @@ pub mod affinity;
 pub mod billing;
 pub mod dispatch;
 pub mod matrix;
+pub mod model_policy;
 pub mod pool;
 pub mod refresh;
 pub mod router;

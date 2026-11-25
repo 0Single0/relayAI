@@ -145,7 +145,7 @@ export const ModelPriceDialog = ({
             </div>
           </div>
 
-          <div className="flex flex-col gap-1"><label id="model-provider" className="text-xs font-medium">模型厂商</label><Select value={modelProvider || "__unclassified__"} onValueChange={value => setModelProvider(value === "__unclassified__" ? "" : value)}><SelectTrigger aria-labelledby="model-provider"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="__unclassified__">未标注</SelectItem>{modelProviders.map(provider => <SelectItem key={provider.value} value={provider.value}>{modelProviderLabel(provider.value)}</SelectItem>)}</SelectContent></Select><p className="text-[11px] text-muted-foreground">分组发布校验会使用此字段。</p></div>
+          <div className="flex flex-col gap-1"><label id="model-provider" className="text-xs font-medium">模型厂商</label><Select value={modelProvider || "__unclassified__"} onValueChange={value => setModelProvider(value === "__unclassified__" ? "" : value)}><SelectTrigger aria-labelledby="model-provider"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="__unclassified__">未标注</SelectItem>{modelProviders.map(provider => <SelectItem key={provider.value} value={provider.value}>{modelProviderLabel(provider.value)}</SelectItem>)}</SelectContent></Select><p className="text-[11px] text-muted-foreground">用于展示厂商归属；分组按账号目录与发布规则开放模型。</p></div>
 
           <div className="grid grid-cols-2 gap-3">
             <div className="flex flex-col gap-1">

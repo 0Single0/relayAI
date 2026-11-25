@@ -1,4 +1,4 @@
-﻿package handler
+package handler
 
 import (
 	"testing"
@@ -37,6 +37,16 @@ func TestChannelModelAllowed(t *testing.T) {
 			t.Fatal("停用的分组不该提供任何模型")
 		}
 	})
+}
+
+func TestFutureModelsRequireRealRoutesButNotVendorRegistry(t *testing.T) {
+	groups := []store.Channel{{ID: "ds", ModelProvider: "deepseek", Enabled: true, ModelAllow: []string{"deepseek*"}}}
+	models := []store.Model{{CanonicalName: "deepseek-v5", Enabled: true}, {CanonicalName: "deepseek-v6", Enabled: true}, {CanonicalName: "qwen4", Enabled: true}}
+	routes := ModelRouteSource{"deepseek-v5": {"ds": {}}, "qwen4": {"ds": {}}}
+	got := visibleModels(groups, models, routes)
+	if len(got) != 1 || got[0].Model.CanonicalName != "deepseek-v5" {
+		t.Fatalf("unexpected published models: %+v", got)
+	}
 }
 
 func TestVisibleModels(t *testing.T) {

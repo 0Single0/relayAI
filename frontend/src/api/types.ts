@@ -39,7 +39,7 @@ export type Channel = {
   rateLimitQps: number | null;
   accountCount: number;
   todayRequests: number;
-  /** 对外暴露的模型白名单；空 = 不限制。 */
+  /** 对外模型发布规则（精确名称 / * 通配符）；空 = 不限制。 */
   modelAllow: string[];
   caps: OpsCaps;
   /**

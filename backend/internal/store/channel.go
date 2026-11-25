@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 
+	"relayai/backend/internal/modelpolicy"
 	"relayai/backend/internal/models"
 
 	"gorm.io/gorm"
@@ -63,12 +64,12 @@ type Channel struct {
 	//
 	// 保留实际平台集合，方便识别历史遗留的跨平台归组数据。
 	Platforms []string `json:"platforms"`
-	// ModelAllow 是该分组**对外暴露**的模型白名单（空 = 不限制）。
+	// ModelAllow 是该分组的模型发布规则：精确名称或 * 通配符（空 = 不限制）。
 	//
 	// 与账号级 `model_allow` 的区别：那个是"这个号**能跑**什么"（能力），
 	// 这个是"这个分组**愿意卖**什么"（策略）。
 	ModelAllow []string `json:"modelAllow"`
-	// ProbeModel 是探活使用的对外模型名；空 = 由网关自动挑。
+	// ProbeModel 是旧版探活使用的对外模型名；空 = 未配置。
 	ProbeModel string `json:"probeModel"`
 	// ProbeModels 是本分组要探活的全部模型（`probe_models` ∪ `probe_model`）。
 	//
@@ -235,9 +236,8 @@ type ChannelInput struct {
 	ModelAllow []string `json:"modelAllow"`
 	// ProbeModel 是旧版单值探活模型；保留兼容。
 	ProbeModel *string `json:"probeModel"`
-	// ProbeModels 是本分组要探活的模型列表；空 = 探对外暴露的全部。
-	//
-	// nil = 不改；空数组 = 清空（回到"探全部"）。
+	// ProbeModels 是本分组显式选定的具体模型；空 = 不探。
+	// nil = 不改；空数组 = 清空。
 	ProbeModels *[]string `json:"probeModels"`
 	// StatusVisible 决定这个分组是否出现在「分组状态」页；nil = 不改。
 	StatusVisible *bool `json:"statusVisible"`
@@ -251,6 +251,15 @@ func (s *Store) CreateChannel(ctx context.Context, input ChannelInput) (*Channel
 		if !ValidModelProvider(provider) {
 			return nil, fmt.Errorf("%w：请选择有效的模型厂商", ErrInvalidInput)
 		}
+	}
+	if input.ModelAllow == nil && provider != "" {
+		input.ModelAllow = modelpolicy.Defaults(provider)
+		if len(input.ModelAllow) == 0 {
+			return nil, fmt.Errorf("%w：该厂商需要显式配置发布规则", ErrInvalidInput)
+		}
+	}
+	if err := modelpolicy.Validate(input.ModelAllow); err != nil {
+		return nil, fmt.Errorf("%w：%v", ErrInvalidInput, err)
 	}
 	if input.Adapter == "" {
 		input.Adapter = "custom"
@@ -333,12 +342,10 @@ func (s *Store) UpdateChannel(ctx context.Context, id string, input ChannelInput
 			return nil, fmt.Errorf("%w：分组创建后不可切换模型厂商，请新建分组", ErrInvalidInput)
 		}
 	}
-	modelAllow := currentGroup.ModelAllow
 	if input.ModelAllow != nil {
-		modelAllow = input.ModelAllow
-	}
-	if err := s.validateGroupModels(ctx, provider, modelAllow); err != nil {
-		return nil, err
+		if err := modelpolicy.Validate(input.ModelAllow); err != nil {
+			return nil, fmt.Errorf("%w：%v", ErrInvalidInput, err)
+		}
 	}
 	if input.Adapter != "" || len(input.Options) > 0 {
 		current, err := s.GetChannel(ctx, id)

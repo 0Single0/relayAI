@@ -117,6 +117,10 @@ ALTER TABLE accounts
 		version: "20261106_account_groups",
 		up:      migrateAccountGroups,
 	},
+	{
+		version: "20261125_group_publication_rules",
+		up:      migrateGroupPublication,
+	},
 }
 
 // Migrate 执行迁移：先 AutoMigrate 建/补表结构，再跑未执行的显式迁移。

@@ -127,24 +127,6 @@ func (s *Store) UpdateAccount(ctx context.Context, id int64, input AccountInput)
 		if err != nil {
 			return err
 		}
-		providers, err := New(tx).ModelProviderIndex(ctx)
-		if err != nil {
-			return err
-		}
-		for _, group := range values {
-			var provider string
-			if err := tx.Model(&models.Channels{}).Select("model_provider").Where("id = ?", group.GroupID).Scan(&provider).Error; err != nil {
-				return err
-			}
-			if provider == "" {
-				continue
-			}
-			for _, model := range record.ModelAllow {
-				if got := providers[model]; got != "" && got != provider {
-					return fmt.Errorf("%w：账号模型 %s 与分组厂商 %s 不一致", ErrInvalidInput, model, provider)
-				}
-			}
-		}
 		var existing []models.AccountGroups
 		if err := tx.Where("account_id = ?", id).Find(&existing).Error; err != nil {
 			return err
