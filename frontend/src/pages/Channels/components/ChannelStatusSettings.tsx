@@ -158,10 +158,6 @@ export const ChannelStatusSettings = ({
                 );
               })}
             </div>
-            <p className="text-[11px] leading-4 text-muted-foreground">
-              探活会用选中的模型各发一句 hello 来确认凭据可用，会真实消耗额度。
-              一个都不选 = 这个分组不做定时探活。
-            </p>
           </>
         )}
       </div>

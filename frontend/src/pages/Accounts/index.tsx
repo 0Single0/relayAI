@@ -54,6 +54,7 @@ import { CreateAccountDrawer } from "@/pages/Accounts/components/CreateAccountDr
 import { EditAccountDialog } from "@/pages/Accounts/components/EditAccountDialog";
 import { toast } from "@/components/common/Toast/store";
 import { accountPlatformLabel } from "@/pages/Channels/shared";
+import { ProviderLabel } from "@/components/common/ProviderLogo";
 import { compactNumber } from "@/lib/charts";
 import { cn } from "@/lib/utils";
 import { getRequestErrorMessage } from "@/utils/request";
@@ -626,8 +627,8 @@ export const AccountsPage = () => {
               {/* 待分配：账号是独立实体，允许先建号、之后再把号归到某个分组。 */}
               <SelectItem value={UNASSIGNED}>待分配（未归组）</SelectItem>
               {channels.map((channel) => (
-                <SelectItem key={channel.id} value={channel.id}>
-                  {channel.name}
+                <SelectItem key={channel.id} value={channel.id} textValue={channel.name}>
+                  <ProviderLabel provider={channel.modelProvider}>{channel.name}</ProviderLabel>
                 </SelectItem>
               ))}
             </SelectContent>
@@ -683,8 +684,8 @@ export const AccountsPage = () => {
                 </SelectItem>
                 <SelectItem value="__unassign__">解除分配（回到待分配）</SelectItem>
                 {channels.filter((channel) => channel.enabled).map((channel) => (
-                  <SelectItem key={channel.id} value={channel.id}>
-                    {channel.name}
+                  <SelectItem key={channel.id} value={channel.id} textValue={channel.name}>
+                    <ProviderLabel provider={channel.modelProvider}>{channel.name}</ProviderLabel>
                   </SelectItem>
                 ))}
               </SelectContent>

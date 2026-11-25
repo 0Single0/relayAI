@@ -21,6 +21,7 @@ import {
 import { Switch } from "@/components/ui/switch";
 import { ChannelStatusSettings, type StatusSettingsValue } from "@/pages/Channels/components/ChannelStatusSettings";
 import { modelProviders } from "@/pages/Channels/shared";
+import { ProviderLogo } from "@/components/common/ProviderLogo";
 import { cn } from "@/lib/utils";
 import { getRequestErrorMessage } from "@/utils/request";
 
@@ -269,7 +270,16 @@ export const ChannelFormSheet = ({
           <Field label="模型厂商" error={errors.modelProvider} hint="分组只发布已标注为该厂商的模型。">
             <Select value={form.modelProvider || undefined} onValueChange={(next) => update("modelProvider", next)}>
               <SelectTrigger aria-label="模型厂商" aria-invalid={Boolean(errors.modelProvider)}><SelectValue placeholder="选择模型厂商" /></SelectTrigger>
-              <SelectContent>{modelProviders.map((provider) => <SelectItem key={provider.value} value={provider.value}>{provider.label}</SelectItem>)}</SelectContent>
+              <SelectContent>
+                {modelProviders.map((provider) => (
+                  <SelectItem key={provider.value} value={provider.value} textValue={provider.label}>
+                    <span className="inline-flex items-center gap-2">
+                      <ProviderLogo provider={provider.value} />
+                      {provider.label}
+                    </span>
+                  </SelectItem>
+                ))}
+              </SelectContent>
             </Select>
           </Field>
 

@@ -25,6 +25,7 @@ import {
 import { ChannelFormSheet } from "@/pages/Channels/components/ChannelFormSheet";
 import { ChannelModelsDialog } from "@/pages/Channels/components/ChannelModelsDialog";
 import { modelProviderLabel } from "@/pages/Channels/shared";
+import { ProviderLogo } from "@/components/common/ProviderLogo";
 import { cn } from "@/lib/utils";
 import { getRequestErrorMessage } from "@/utils/request";
 
@@ -164,8 +165,9 @@ export const ChannelsPage = () => {
       render: (channel) => (
         <Link
           to={`/channels/${encodeURIComponent(channel.id)}`}
-          className="flex min-w-0 items-baseline gap-1.5 hover:text-primary"
+          className="flex min-w-0 items-center gap-1.5 hover:text-primary"
         >
+          <ProviderLogo provider={channel.modelProvider} />
           <span className="truncate font-medium">{channel.name}</span>
           <span className="shrink-0 font-mono text-xs text-muted-foreground">
             {channel.id}

@@ -36,6 +36,7 @@ import {
 import { cn } from "@/lib/utils";
 import { getRequestErrorMessage } from "@/utils/request";
 import { CustomModelPicker } from "./CustomModelPicker";
+import { ProviderLogo } from "@/components/common/ProviderLogo";
 import { getCustomModelError, serializeCustomModels, type CustomModelDraft } from "./customModels";
 
 type CreateAccountDrawerProps = {
@@ -353,7 +354,7 @@ export const CreateAccountDrawer = ({
               "为了建号随便建一个分组"这种更脏的数据。
               未分配的号不参与调度，之后在账号列表里批量分配即可。
             */}
-            {compatibleChannels.length > 0 ? <div className="max-h-36 overflow-y-auto rounded-md border p-2">{compatibleChannels.map(channel => <label key={channel.id} className="flex cursor-pointer items-center gap-2 py-1.5 text-xs"><input type="checkbox" disabled={pending || ticket !== null} checked={groupIds.includes(channel.id)} onChange={event => setGroupIds(current => { const next = event.target.checked ? [...current, channel.id] : current.filter(id => id !== channel.id); setChannelId(next[0] ?? ""); return next; })} /><span className="min-w-0 flex-1 truncate">{channel.name}</span><span className="text-muted-foreground">×{channel.channelRatio.toFixed(2)}</span></label>)}</div> : <p className="text-[11px] text-muted-foreground">账号可先保存，之后再加入分组。</p>}
+            {compatibleChannels.length > 0 ? <div className="max-h-36 overflow-y-auto rounded-md border p-2">{compatibleChannels.map(channel => <label key={channel.id} className="flex cursor-pointer items-center gap-2 py-1.5 text-xs"><input type="checkbox" disabled={pending || ticket !== null} checked={groupIds.includes(channel.id)} onChange={event => setGroupIds(current => { const next = event.target.checked ? [...current, channel.id] : current.filter(id => id !== channel.id); setChannelId(next[0] ?? ""); return next; })} /><ProviderLogo provider={channel.modelProvider} /><span className="min-w-0 flex-1 truncate">{channel.name}</span><span className="text-muted-foreground">×{channel.channelRatio.toFixed(2)}</span></label>)}</div> : <p className="text-[11px] text-muted-foreground">账号可先保存，之后再加入分组。</p>}
           </div>
 
           {/*

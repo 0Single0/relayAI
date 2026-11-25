@@ -21,6 +21,7 @@ import {
 } from "@/components/ui/select";
 import { compactNumber } from "@/lib/charts";
 import { cn } from "@/lib/utils";
+import { ProviderLabel } from "@/components/common/ProviderLogo";
 import { getRequestErrorMessage } from "@/utils/request";
 
 const ALL = "__all__";
@@ -474,8 +475,8 @@ export const UsagePage = () => {
             <SelectContent>
               <SelectItem value={ALL}>全部渠道</SelectItem>
               {channels.map((channel) => (
-                <SelectItem key={channel.id} value={channel.id}>
-                  {channel.name}
+                <SelectItem key={channel.id} value={channel.id} textValue={channel.name}>
+                  <ProviderLabel provider={channel.modelProvider}>{channel.name}</ProviderLabel>
                 </SelectItem>
               ))}
             </SelectContent>

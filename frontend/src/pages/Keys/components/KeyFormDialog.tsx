@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { ProviderLabel } from "@/components/common/ProviderLogo";
 import { createKey, updateKey, type KeyPayload } from "@/api/keys";
 import type { CatalogModel } from "@/api/catalog";
 import type { ApiKey, Channel, Model } from "@/api/types";
@@ -231,8 +232,8 @@ export const KeyFormDialog = ({
               </SelectTrigger>
               <SelectContent>
                 {channels.map((channel) => (
-                  <SelectItem key={channel.id} value={channel.id}>
-                    {channel.name}（×{channel.channelRatio.toFixed(2)}）
+                  <SelectItem key={channel.id} value={channel.id} textValue={channel.name}>
+                    <ProviderLabel provider={channel.modelProvider}>{channel.name}（×{channel.channelRatio.toFixed(2)}）</ProviderLabel>
                   </SelectItem>
                 ))}
               </SelectContent>
